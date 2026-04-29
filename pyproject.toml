@@ -1,0 +1,171 @@
+# pyproject.toml for Engineering System Designer
+#
+# Per:
+# - specs/09_coding_standards.md §13 (Ruff, mypy, pytest configuration)
+# - specs/12_ci_cd_pipeline.md §4 (Python version requirement)
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# --- Project metadata ---------------------------------------------------------
+[project]
+name = "system_designer"
+version = "0.2.0"
+description = "Engineering System Designer — visual system modeling, simulation, and control design"
+readme = "README.md"
+# Python 3.11+ supported; 3.14 boundary keeps the upper bound conservative.
+requires-python = ">=3.11,<3.14"
+license = { text = "TBD" }
+authors = [
+    { name = "Serhat Combas" },
+]
+keywords = [
+    "engineering",
+    "simulation",
+    "modelica",
+    "simscape",
+    "control",
+    "system-modeling",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+# Repository = "https://github.com/<org>/<repo>"
+# Documentation = "https://github.com/<org>/<repo>"
+
+# --- Console scripts (allow `system-designer` command after install) ----------
+[project.scripts]
+system-designer = "application.main:main"
+
+# --- Setuptools package discovery (src/ layout) -------------------------------
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["application*", "features*", "shared*"]
+exclude = ["tests*"]
+
+# --- Ruff ---------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "N",      # pep8-naming
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "D",      # pydocstyle
+    "PT",     # flake8-pytest-style
+    "RUF",    # Ruff-specific rules
+    "SIM",    # flake8-simplify
+    "TID",    # flake8-tidy-imports
+    "TCH",    # flake8-type-checking
+    "T201",   # no print()
+]
+ignore = [
+    "D100",   # missing docstring in public module
+    "D104",   # missing docstring in public package
+    "D203",   # 1 blank line before class docstring (conflicts with D211)
+    "D213",   # multi-line summary on second line (conflicts with D212)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# PySide6 signals use lowerCamelCase by convention (see specs/09 §7.2.2)
+"**/model/*.py" = ["N815"]
+"**/widgets/*.py" = ["N815"]
+# Tests do not require docstrings
+"tests/**/*.py" = ["D"]
+# Allow unused imports for re-export
+"**/__init__.py" = ["F401"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["application", "features", "shared"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# --- mypy ---------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+namespace_packages = true
+explicit_package_bases = true
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = ["casadi.*", "scipy.*", "h5py.*", "matplotlib.*"]
+ignore_missing_imports = true
+
+# --- pytest -------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "unit: fast unit tests (default)",
+    "integration: integration tests across modules",
+    "architecture: architecture and import-boundary tests",
+    "gui: tests requiring QApplication",
+    "slow: tests that take > 1 second",
+]
+
+# --- Coverage -----------------------------------------------------------------
+[tool.coverage.run]
+source = ["src"]
+omit = [
+    "*/tests/*",
+    "*/__init__.py",
+    "src/shared/engine/*",  # Phase 1: not active
+]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+
+# --- Bandit -------------------------------------------------------------------
+[tool.bandit]
+exclude_dirs = ["tests", "build", "dist"]
+skips = ["B101"]  # assert_used: assertions are used in tests

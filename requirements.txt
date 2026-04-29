@@ -1,0 +1,32 @@
+# Runtime dependencies for Engineering System Designer (Phase 1)
+#
+# Phase 1 ships with the visual modeling tier only.
+# Phase 2 will add CasADi, NumPy with optimization, h5py, etc.
+#
+# Update procedure:
+# 1. Bump the version here.
+# 2. Run pip install -r requirements.txt locally and verify import.
+# 3. Run the full test suite locally.
+# 4. Commit with a clear message describing the upgrade rationale.
+# 5. CI must pass before merge.
+
+# --- Qt GUI framework ---------------------------------------------------------
+# 6.8.0.2+ supports Python 3.13. The 6.8.x series is the last LTS-style line
+# before Qt 6.9 lands. Lock the minor version to avoid accidental jumps.
+PySide6>=6.8.0.2,<6.9
+
+# --- Data and validation ------------------------------------------------------
+pydantic>=2.9.0,<3.0
+
+# --- ID generation ------------------------------------------------------------
+python-ulid>=3.0.0,<4.0
+
+# --- Logging helpers (stdlib only; no third-party logging library in Phase 1) -
+# (intentionally empty — see specs/10_logging_conventions.md §3)
+
+# --- Phase 2 placeholders (commented out until Stage S4 entry) ----------------
+# numpy>=2.1.0,<3.0
+# scipy>=1.14.0,<2.0
+# casadi>=3.6.0,<4.0
+# h5py>=3.12.0,<4.0
+# matplotlib>=3.9.0,<4.0
