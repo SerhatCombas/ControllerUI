@@ -1471,12 +1471,14 @@ The following implementation decisions remain open but must not violate this doc
 
 ### 24.1 Component Definition Storage Format
 
-Should built-in component definitions initially be JSON files, Python dataclasses, or a hybrid?
+**Resolved** by `decisions/ADR-021-builtin-component-definitions.md` (2026-05-11).
 
-Constraint:
+Built-in component definitions in Phase 1 are Python `frozen=True` dataclasses under `src/shared/registry/builtin/`. JSON, YAML, and hybrid file-based formats are deferred to Phase 1.5+ when user-extensible plugins land; a superseding ADR will revisit at that time.
 
-- registries must expose the same validated schema regardless of source format
-- definitions must remain testable without GUI
+The original constraints remain in force and are satisfied by ADR-021:
+
+- Registries must expose the same validated schema regardless of source format. → Registry API stays source-agnostic; future `from_dict` constructors enable JSON loading as an additive entry point, not a replacement.
+- Definitions must remain testable without GUI. → Python-native fixtures are GUI-free by construction.
 
 ### 24.2 SVG Asset Source
 

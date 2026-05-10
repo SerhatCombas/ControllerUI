@@ -1393,9 +1393,10 @@ ADR-017-mirror-sync-plot-dropdowns.md
 ADR-018-signal-payload-contracts.md
 ADR-019-batch-mutation-and-changeset.md
 ADR-020-dirty-tracking-semantics.md
+ADR-021-builtin-component-definitions.md
 ```
 
-ADR-018 through ADR-020 are S1-stage ADRs added during the WorkspaceModel design refinement; they are listed here in chronological numbering.
+ADR-018 through ADR-021 are S1-stage ADRs added during the WorkspaceModel and registry design refinement; they are listed here in chronological numbering. ADR-021 closes `specs/01 §24.1` (Open Question on definition storage format).
 
 ### 19.3 ADR Cross-References
 
@@ -1421,6 +1422,7 @@ ADR-018 through ADR-020 are S1-stage ADRs added during the WorkspaceModel design
 | ADR-018 | WorkspaceModel signal payload contracts (12 fine-grained signals; delta-vs-id-only rule; synchronous emission) | `02 §4.1`, `02 §22`, `02 §23` |
 | ADR-019 | Batch mutation mode and `WorkspaceChangeSet` (13th signal `modelChanged`; mutex with fine-grained signals; Mode B exception path) | `02 §4.1`, `02 §20.6`, `02 §22.2` |
 | ADR-020 | Dirty tracking semantics (meaningful-edit principle; ε=1e-6 no-op tolerance; transition-only emission; deferred `cleanState` binding) | `02 §29.7`, `02 §32.2` |
+| ADR-021 | Built-in component definitions as Python `frozen=True` dataclasses for Phase 1 (no JSON/YAML loader; user-extensible plugins deferred to Phase 1.5+) | `01 §24.1`, `01 §1.114`, `01 §6`, `02 §11.1` |
 
 ADRs are especially important because AI coding tools may otherwise reintroduce previously rejected architecture choices.
 
