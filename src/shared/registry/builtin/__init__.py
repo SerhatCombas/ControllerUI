@@ -1,16 +1,22 @@
-"""shared/registry/builtin: Phase 1 core MVP component definitions.
+"""shared/registry/builtin: Phase 1 built-in component definitions.
 
-Per ADR-021 and `01 §13` MVP list. The S1.B.1c definition set is
-the minimum required to exercise the connection validator (S1.4)
-and the graph assembler (S1.5) across both Phase 1 domains:
+Per ADR-021 and `01 §13` MVP list. The current set covers the
+full Phase 1 electrical-analog library (11 definitions) plus the
+S1.B.1c mechanical-translational core (3 definitions); the
+remaining mechanical components, sources, and sensors land in
+S1.B.2b through S1.B.2d.
 
-* Single-port — `ground_electric`, `fixed`, `mass`
-* Two-port symmetric — `resistor`, `capacitor`, `spring`
-* Two-port asymmetric source — `constant_voltage`
+Library subtrees (path → count):
 
-The remaining ~15 Phase 1 components from `01 §13` (additional
-voltage sources, sensors, force sources, etc.) are deferred to
-S1.B.2 and are added before UI smoke tests in S1.9 land.
+* Electrical / Analog / Components — 4 (Ground Electric, Resistor,
+  Capacitor, Inductor)
+* Electrical / Analog / Sensors — 2 (Current Sensor, Voltage
+  Sensor)
+* Electrical / Analog / Sources — 5 (Constant Voltage, Ramp
+  Voltage, Signal Voltage, Sine Voltage, Step Voltage)
+* Mechanical / Translational / Components — 3 (Fixed, Mass,
+  Spring; Damper / Spring Damper / Wheel Black / Wheel White
+  land in S1.B.2b)
 
 The `BUILTIN_COMPONENT_DEFINITIONS` tuple is the canonical
 construction argument for the default `ComponentRegistry`. A
@@ -37,8 +43,15 @@ References:
 from .electrical import (
     CAPACITOR_DEFINITION,
     CONSTANT_VOLTAGE_DEFINITION,
+    CURRENT_SENSOR_DEFINITION,
     GROUND_ELECTRIC_DEFINITION,
+    INDUCTOR_DEFINITION,
+    RAMP_VOLTAGE_DEFINITION,
     RESISTOR_DEFINITION,
+    SIGNAL_VOLTAGE_DEFINITION,
+    SINE_VOLTAGE_DEFINITION,
+    STEP_VOLTAGE_DEFINITION,
+    VOLTAGE_SENSOR_DEFINITION,
 )
 from .mechanical import (
     FIXED_DEFINITION,
@@ -46,14 +59,26 @@ from .mechanical import (
     SPRING_DEFINITION,
 )
 
-# Canonical tuple of all Phase 1 core MVP definitions, in
-# library-tree presentation order (electrical first, then
-# mechanical, components-then-sources within each domain).
+# Canonical tuple of all Phase 1 built-in definitions, in
+# library-tree presentation order: each domain block lists
+# components first, then sensors, then sources, in the order the
+# corresponding `01 §13` subsections present them.
 BUILTIN_COMPONENT_DEFINITIONS = (
+    # Electrical Analog / Components (4)
     GROUND_ELECTRIC_DEFINITION,
     RESISTOR_DEFINITION,
     CAPACITOR_DEFINITION,
+    INDUCTOR_DEFINITION,
+    # Electrical Analog / Sensors (2)
+    CURRENT_SENSOR_DEFINITION,
+    VOLTAGE_SENSOR_DEFINITION,
+    # Electrical Analog / Sources (5)
     CONSTANT_VOLTAGE_DEFINITION,
+    RAMP_VOLTAGE_DEFINITION,
+    SIGNAL_VOLTAGE_DEFINITION,
+    SINE_VOLTAGE_DEFINITION,
+    STEP_VOLTAGE_DEFINITION,
+    # Mechanical Translational / Components (3 — full set lands in S1.B.2b)
     FIXED_DEFINITION,
     MASS_DEFINITION,
     SPRING_DEFINITION,
@@ -64,9 +89,16 @@ __all__ = [
     "BUILTIN_COMPONENT_DEFINITIONS",
     "CAPACITOR_DEFINITION",
     "CONSTANT_VOLTAGE_DEFINITION",
+    "CURRENT_SENSOR_DEFINITION",
     "FIXED_DEFINITION",
     "GROUND_ELECTRIC_DEFINITION",
+    "INDUCTOR_DEFINITION",
     "MASS_DEFINITION",
+    "RAMP_VOLTAGE_DEFINITION",
     "RESISTOR_DEFINITION",
+    "SIGNAL_VOLTAGE_DEFINITION",
+    "SINE_VOLTAGE_DEFINITION",
     "SPRING_DEFINITION",
+    "STEP_VOLTAGE_DEFINITION",
+    "VOLTAGE_SENSOR_DEFINITION",
 ]
