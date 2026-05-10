@@ -616,6 +616,32 @@ Phase 1 must not:
 * compute these values from the graph topology
 * allow the user to type arbitrary values; values are constrained to the enumerations above
 
+### 11.4 Field Mutability Matrix
+
+The fields on `ComponentInstance` and `Connection` fall into three categories in Phase 1: **user-editable**, **internal / round-trip only**, and **identity / auto-managed**. This matrix codifies which fields have public mutation paths on `WorkspaceModel` and which are populated only at instance creation or via `from_dict` (load-time preservation, see §29.3.1).
+
+**ComponentInstance fields:**
+
+| Field | Phase 1 mutability | Write path |
+|---|---|---|
+| `position` | User-editable | `move_component` (raw); `MoveComponentCommand` (S1.7) |
+| `rotation` | User-editable | `rotate_component` (raw); `RotateComponentCommand` (S1.7) |
+| `custom_label` | User-editable | `set_custom_label` (raw); `ChangeLabelCommand` (S1.7) |
+| `parameters` | User-editable | `set_parameter` (raw); `ChangeParameterCommand` (S1.7) |
+| `locked` | User-editable | `set_locked` (raw); `LockComponentCommand` (S1.7) |
+| `tags` | User-editable | `set_tags` (raw); `ChangeTagsCommand` (S1.7) |
+| `annotations` | User-editable | `set_annotations` (raw); `ChangeAnnotationsCommand` (S1.7) |
+| `id`, `display_id` | Immutable identity | Set once via `WorkspaceIdGenerator` in `_build_component_instance`; never mutated |
+| `definition_id`, `type`, `display_name`, `domain`, `category` | Immutable definition-inherited | Set once from the source `ComponentDefinition`; never mutated |
+| `visual`, `physical_attributes` | Immutable definition-inherited (§11.3) | Set once from definition defaults; no public setter in Phase 1 |
+| `created_at` | Immutable lifecycle timestamp | Stamped in `_build_component_instance`; never mutated |
+| `modified_at` | Auto-managed | Stamped on construction; updated as the last step of every successful real mutator. **No-op mutations do NOT bump `modified_at`** (per ADR-020 §"No-op suppression") |
+| `metadata`, `extensions` | Internal / round-trip only | `_build_component_instance` (new instance); `from_dict` (load-time preservation per §29.3.1). Forward-compatibility containers (§29.1); future Bond Graph metadata storage (§39). No public setter in Phase 1. |
+
+**Connection fields:** the same classification applies. `label`, `routing`, and `style` are user-editable via the `update_connection` combo method (one call updates any subset of these fields and emits a single `connectionChanged`). `metadata` and `extensions` are internal / round-trip only. `id` and `display_id` are immutable identity. Connection endpoint re-targeting (§37) is a future command-layer feature delivered via `ModifyConnectionCommand` (S1.7+); `update_connection` does not modify `source` or `target`.
+
+**Regression guard:** the architecture test `tests/architecture/test_workspace_model_immutability.py` verifies that `WorkspaceModel` exposes no public setter for `physical_attributes`, `visual`, `metadata`, `extensions`, `created_at`, or `modified_at`. Adding a public setter for any of these fields requires updating this matrix first; for definition-inherited fields (`visual`, `physical_attributes`), a new ADR justifying the policy change is also required.
+
 ---
 
 ## 12. SVG Usage
