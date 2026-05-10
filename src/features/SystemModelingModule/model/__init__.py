@@ -40,6 +40,7 @@ from .connection import (
     RoutingStyle,
     Waypoint,
 )
+from .graph_validator import GraphValidator
 from .id_generator import WorkspaceIdGenerator
 from .selection_model import SelectionModel, SelectionSnapshot
 from .validation_report import (
@@ -56,6 +57,7 @@ __all__ = [
     "ComponentInstance",
     "Connection",
     "ConnectionRouting",
+    "GraphValidator",
     "MotionKind",
     "PhysicalAttributes",
     "PortRef",
