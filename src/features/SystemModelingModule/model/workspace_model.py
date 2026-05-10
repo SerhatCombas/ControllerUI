@@ -18,14 +18,34 @@ Phase 1 build order within S1.3:
 * S1.3a: skeleton — constructor, internal stores, dirty flag,
   read-only views, internal builders.
 * S1.3b: ε-tolerance equality helpers in sibling module `equality.py`.
-* S1.3c.1 (this commit): 12 fine-grained signals (ADR-018) +
-  `add_component` / `remove_component` / `move_component` mutation
-  methods + transition-only `_set_dirty()` helper.
-* S1.3c.2: rotation, connection mutations, parameter and property
-  setters.
+* S1.3c.1: 12 fine-grained signals (ADR-018) + `add_component` /
+  `remove_component` / `move_component` mutation methods +
+  transition-only `_set_dirty()` helper.
+* S1.3c.2a (this commit): `ComponentInstance.rotation` schema fix
+  (`int → float` per ADR-018), shared `_canonical_rotation` helper
+  that validates + snaps sub-ε drift to canonical Phase-1 angles,
+  rotation validation on `add_component`, and the `rotate_component`
+  mutation method with ε no-op suppression. Storage and signal
+  payloads carry canonical angles, not caller drift.
+* S1.3c.2b: connection mutations, parameter and property setters.
 * S1.3d: `batch()` context manager + `WorkspaceChangeSet` + 13th
   signal `modelChanged`.
 * S1.3e: `reset()` + `modelReset()` signal + `_clear_dirty()`.
+
+Validation order in mutation methods (consistent across S1.3c.x):
+
+1. Argument validation (e.g., `_canonical_rotation`) — raises early
+   on bad inputs, leaves model state untouched.
+2. Existence check (e.g., `component_id` in `_components`) — raises
+   `KeyError` if the target is missing.
+3. No-op suppression via ε-tolerance helpers — returns silently if
+   the call would not change state.
+4. Mutation + `_set_dirty()` + signal emission.
+
+A call with both an invalid argument and a missing id raises the
+argument error first (step 1), not the missing-id error (step 2).
+This reflects the principle that argument validation precedes
+resource lookup.
 
 References:
 ----------
@@ -33,7 +53,8 @@ References:
 * `decisions/ADR-018-signal-payload-contracts.md`
 * `decisions/ADR-019-batch-mutation-and-changeset.md`
 * `decisions/ADR-020-dirty-tracking-semantics.md`
-* `specs/02_workspace_requirements.md` §3 (Source of Truth), §4 (Signals)
+* `specs/02_workspace_requirements.md` §3 (Source of Truth), §4 (Signals),
+  §22 / §23 (Phase-1 rotation quantization)
 * `specs/06_data_flow_and_architecture.md` §4.2
 """
 
@@ -42,7 +63,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from PySide6.QtCore import QObject, QPointF, Signal
 
@@ -56,13 +77,20 @@ from .connection import (
     ConnectionRouting,
     PortRef,
 )
-from .equality import approx_equal_qpointf
+from .equality import approx_equal_float, approx_equal_qpointf
 from .id_generator import WorkspaceIdGenerator
 from .selection_model import SelectionSnapshot
 from .validation_report import ValidationReport
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+
+# Phase-1 rotation quantization per `02 §22`/`§23`. ADR-018 keeps the
+# signal payload type `float` so the contract stays stable if `02`
+# later admits free or non-orthogonal rotation; the quantization rule
+# is enforced at the mutation API layer via `_canonical_rotation`.
+_VALID_ROTATIONS: Final[tuple[float, ...]] = (0.0, 90.0, 180.0, 270.0)
 
 
 class WorkspaceModel(QObject):
@@ -77,11 +105,15 @@ class WorkspaceModel(QObject):
 
     Mutation API status:
 
-    * S1.3c.1 (current): `add_component`, `remove_component`,
-      `move_component` plus the 12 fine-grained signal definitions
-      and the transition-only `_set_dirty()` helper.
-    * S1.3c.2 (next): rotation, connection mutations, parameter and
-      property setters.
+    * S1.3c.1: `add_component`, `remove_component`, `move_component`
+      plus the 12 fine-grained signal definitions and the
+      transition-only `_set_dirty()` helper.
+    * S1.3c.2a (current): `rotate_component` plus rotation validation
+      on `add_component`. `ComponentInstance.rotation` is now `float`
+      per ADR-018. Sub-ε drift around the Phase-1 valid angles is
+      snapped to the canonical value before storage.
+    * S1.3c.2b (next): connection mutations, parameter and property
+      setters.
     * S1.3d (later): `batch()` context manager and `modelChanged`.
     * S1.3e (last): `reset()` and `_clear_dirty()`.
 
@@ -201,7 +233,7 @@ class WorkspaceModel(QObject):
         visual: VisualSpec,
         physical_attributes: PhysicalAttributes,
         custom_label: str = "",
-        rotation: int = 0,
+        rotation: float = 0.0,
         parameters: Mapping[str, Any] | None = None,
         locked: bool = False,
         tags: tuple[str, ...] = (),
@@ -221,6 +253,13 @@ class WorkspaceModel(QObject):
         match `ComponentInstance.position`. The conversion happens at
         this boundary.
 
+        `rotation` is validated and canonicalized via
+        `_canonical_rotation` before any mutation. Sub-ε drift around
+        the Phase-1 valid angles is snapped to the canonical value, so
+        storage remains exact; downstream code can compare rotations
+        with `==`. Invalid values raise `ValueError` and the model
+        state remains unchanged.
+
         Args:
             definition_id: Dotted identifier of the source component
                 definition.
@@ -232,8 +271,10 @@ class WorkspaceModel(QObject):
             visual: SVG variant selector.
             physical_attributes: Declared physical-attribute flags.
             custom_label: Optional user-editable label.
-            rotation: Initial rotation in degrees (typically
-                `0`/`90`/`180`/`270` per `02 §22`/`§23`).
+            rotation: Initial rotation in degrees. Must be (within ε)
+                one of `{0.0, 90.0, 180.0, 270.0}` per `02 §22`/`§23`;
+                snapped to the canonical value before storage.
+                Defaults to 0.0.
             parameters: Optional parameter mapping. Copied.
             locked: Initial locked state.
             tags: Tuple of free-form tags.
@@ -243,10 +284,15 @@ class WorkspaceModel(QObject):
 
         Returns:
             Internal `component_id` (`cmp_<ULID>`) of the new component.
+
+        Raises:
+            ValueError: If `rotation` is not (within ε) a Phase-1
+                quantization angle.
         """
         # TODO(S1.B): Replace explicit kwargs with ComponentDefinition
         # lookup once ComponentRegistry is implemented. See `specs/07`
         # §16 and the S1.B grouping in `specs/07` §7.
+        canonical_rotation = _canonical_rotation(rotation)
         instance = self._build_component_instance(
             definition_id=definition_id,
             type=type,
@@ -257,7 +303,7 @@ class WorkspaceModel(QObject):
             visual=visual,
             physical_attributes=physical_attributes,
             custom_label=custom_label,
-            rotation=rotation,
+            rotation=canonical_rotation,
             parameters=parameters,
             locked=locked,
             tags=tags,
@@ -326,6 +372,62 @@ class WorkspaceModel(QObject):
         self._set_dirty()
         self.componentMoved.emit(component_id, current_pos, new_pos)
 
+    def rotate_component(self, component_id: str, new_rotation: float) -> None:
+        """Rotate a component to a new angle (degrees).
+
+        Phase-1 quantization rule (`02 §22`/`§23`) is enforced at the
+        mutation API layer: `new_rotation` must be approximately equal
+        (within ε) to one of `{0.0, 90.0, 180.0, 270.0}`. Sub-ε drift
+        around those values (e.g., `math.degrees(math.pi / 2)`
+        ≈ 90.0000…) is **snapped to the canonical exact angle** so
+        that storage stays canonical and downstream comparisons can
+        use `==`.
+
+        Validation order: `new_rotation` is validated and canonicalized
+        before the component existence check. A call like
+        `rotate_component("missing_id", 45.0)` raises `ValueError`,
+        not `KeyError`. This order reflects the class-level rule that
+        argument validation precedes resource lookup (see the module
+        docstring §"Validation order in mutation methods").
+
+        Applies ε=1e-6 no-op suppression per ADR-020: if the canonical
+        new rotation is approximately equal to the current rotation
+        (which is already canonical from any prior write), the call
+        is a no-op — no signal, no dirty change, no `modified_at`
+        bump.
+
+        On a real rotation, `componentRotated(id, old, new)` is
+        emitted with both endpoints as `float` per ADR-018. The
+        emitted `new` is the canonical angle, not the caller's
+        drifted input.
+
+        Args:
+            component_id: Internal `cmp_<ULID>` identifier.
+            new_rotation: Target rotation in degrees. Snapped to the
+                canonical Phase-1 angle if within ε.
+
+        Raises:
+            ValueError: If `new_rotation` is not (within ε) a Phase-1
+                quantization angle. Raised before the existence check.
+            KeyError: If `component_id` is not present in the
+                workspace. Only raised when `new_rotation` is valid.
+        """
+        canonical = _canonical_rotation(new_rotation)
+        current = self._components.get(component_id)
+        if current is None:
+            raise KeyError(component_id)
+        old_rotation = float(current.rotation)
+        if approx_equal_float(old_rotation, canonical):
+            return
+        new_instance = replace(
+            current,
+            rotation=canonical,
+            modified_at=_now_iso8601(),
+        )
+        self._components[component_id] = new_instance
+        self._set_dirty()
+        self.componentRotated.emit(component_id, old_rotation, canonical)
+
     # ------------------------------------------------------------------ #
     # Internal builders
     #
@@ -349,7 +451,7 @@ class WorkspaceModel(QObject):
         visual: VisualSpec,
         physical_attributes: PhysicalAttributes,
         custom_label: str = "",
-        rotation: int = 0,
+        rotation: float = 0.0,
         parameters: Mapping[str, Any] | None = None,
         locked: bool = False,
         tags: tuple[str, ...] = (),
@@ -367,8 +469,8 @@ class WorkspaceModel(QObject):
 
         The returned instance is **not** added to `_components`; the
         caller (the public mutation method `add_component`) is
-        responsible for insertion. Splitting build from insert keeps
-        ID generation testable in isolation.
+        responsible for insertion and for canonicalizing `rotation`
+        via `_canonical_rotation` before invoking this builder.
 
         Args:
             definition_id: Dotted identifier of the source component
@@ -385,7 +487,8 @@ class WorkspaceModel(QObject):
             physical_attributes: Declared physical-attribute flags.
             custom_label: Optional user-editable label. Defaults to
                 "".
-            rotation: Rotation in degrees. Defaults to 0.
+            rotation: Rotation in degrees; assumed already
+                canonicalized by the caller. Defaults to 0.0.
             parameters: Optional parameter mapping. Copied to insulate
                 callers from later mutations. Defaults to empty.
             locked: Initial locked state. Defaults to False.
@@ -439,7 +542,7 @@ class WorkspaceModel(QObject):
         Generates the internal ULID (`con_…`) and the next monotonic
         global display ID (`conn_<n>`). The returned instance is
         **not** added to `_connections`; the caller (public
-        `add_connection`, S1.3c.2) is responsible for insertion.
+        `add_connection`, S1.3c.2b) is responsible for insertion.
 
         Args:
             source: Endpoint reference at the source side.
@@ -488,6 +591,42 @@ class WorkspaceModel(QObject):
         if not self._dirty:
             self._dirty = True
             self.dirtyChanged.emit(True)
+
+
+def _canonical_rotation(rotation: float) -> float:
+    """Validate a rotation value and return the canonical Phase-1 angle.
+
+    Per ADR-018 the signal payload type is `float`, but the Phase-1
+    quantization rule from `02 §22`/`§23` restricts valid values to
+    `{0.0, 90.0, 180.0, 270.0}`. This helper enforces that rule and
+    **snaps sub-ε drift** (e.g., `math.degrees(math.pi / 2)`
+    ≈ 90.0000…) to the canonical valid angle, so internal storage
+    stays exact and downstream comparisons can use `==`.
+
+    Used by both `add_component` (rotation parameter validation) and
+    `rotate_component` (target angle validation). Both methods store
+    the returned canonical value, not the caller's drifted input, and
+    the signal payload also carries the canonical value.
+
+    Subscribers receive `float` payloads but must not hard-code
+    membership in the closed `{0.0, 90.0, 180.0, 270.0}` set —
+    Phase 2+ may admit additional angles (e.g., 45°). The contract
+    only guarantees a `float` in degrees.
+
+    Args:
+        rotation: Candidate rotation value in degrees.
+
+    Returns:
+        The matching canonical angle from `_VALID_ROTATIONS`.
+
+    Raises:
+        ValueError: If `rotation` is not approximately equal (within
+            ε) to any value in `_VALID_ROTATIONS`.
+    """
+    for valid in _VALID_ROTATIONS:
+        if approx_equal_float(rotation, valid):
+            return valid
+    raise ValueError(f"rotation must be one of {_VALID_ROTATIONS}, got {rotation}")
 
 
 def _now_iso8601() -> str:

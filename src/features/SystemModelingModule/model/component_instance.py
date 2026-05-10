@@ -114,8 +114,12 @@ class ComponentInstance:
         physical_attributes: Declared physical-attribute flags.
         custom_label: Optional user-editable free-form label
             (`02 §8.4`). Defaults to empty string.
-        rotation: Rotation in degrees (typically 0, 90, 180, 270).
-            Defaults to 0.
+        rotation: Rotation in degrees as `float`. Phase 1 quantization
+            rule restricts the value to `{0.0, 90.0, 180.0, 270.0}` per
+            `02 §22`/`§23` and ADR-018. The signal payload type is `float`
+            (ADR-018 §"Alternative 4: `int` rotation payload" — rejected
+            because it would couple the signal contract to the current
+            quantization rule). Defaults to 0.0.
         parameters: Mapping of definition-declared parameter IDs to
             user-set values. Empty mapping means "use definition
             defaults at runtime."
@@ -151,7 +155,7 @@ class ComponentInstance:
     visual: VisualSpec
     physical_attributes: PhysicalAttributes
     custom_label: str = ""
-    rotation: int = 0
+    rotation: float = 0.0
     parameters: dict[str, Any] = field(default_factory=dict)
     locked: bool = False
     tags: tuple[str, ...] = ()

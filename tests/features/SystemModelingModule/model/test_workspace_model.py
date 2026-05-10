@@ -1,4 +1,4 @@
-"""Unit tests for `WorkspaceModel` (S1.3a + S1.3b + S1.3c.1).
+"""Unit tests for `WorkspaceModel` (S1.3a + S1.3b + S1.3c.1 + S1.3c.2a).
 
 Covers (cumulative):
 
@@ -13,10 +13,17 @@ Covers (cumulative):
   and drive transition-only `dirtyChanged` emission. ε=1e-6 no-op
   suppression per ADR-020 is enforced on `move_component`. Missing
   identifiers raise `KeyError`.
+* S1.3c.2a — `ComponentInstance.rotation` is `float` per ADR-018;
+  `_canonical_rotation` shared helper validates against the Phase-1
+  `{0.0, 90.0, 180.0, 270.0}` quantization rule and snaps sub-ε drift
+  to the canonical angle. Both `add_component` and `rotate_component`
+  store the canonical value, not caller drift, and the signal payload
+  in `componentRotated` is also canonical. Validation order in
+  rotate_component is argument-first / existence-second.
 
-Public mutation API for rotation, connections, parameters, and
-property setters lands in S1.3c.2 and is not tested here. Batch mode
-(S1.3d) and `reset()` (S1.3e) are also out of scope.
+Public mutation API for connections, parameters, and property setters
+lands in S1.3c.2b. Batch mode (S1.3d) and `reset()` (S1.3e) are out of
+scope.
 
 References
 ----------
@@ -25,11 +32,12 @@ References
 * `decisions/ADR-018-signal-payload-contracts.md`
 * `decisions/ADR-020-dirty-tracking-semantics.md`
 * `specs/02_workspace_requirements.md` §3 (Source of Truth), §4 (Signals),
-  §22 (Move/Delete)
+  §22 (Move/Delete), §23 (Rotation)
 """
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from types import MappingProxyType
@@ -406,6 +414,50 @@ def test_add_component_does_not_re_emit_dirty_when_already_dirty() -> None:
 
 
 # ---------------------------------------------------------------------- #
+# `add_component` rotation validation and canonicalization (S1.3c.2a)
+# ---------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("angle", [0.0, 90.0, 180.0, 270.0])
+def test_add_component_accepts_phase1_quantized_rotations(angle: float) -> None:
+    """All four Phase-1 quantization angles are accepted without error."""
+    model = WorkspaceModel()
+
+    new_id = model.add_component(**_add_kwargs(rotation=angle))
+
+    assert model.components[new_id].rotation == angle
+
+
+@pytest.mark.unit
+def test_add_component_raises_valueerror_for_invalid_rotation() -> None:
+    """An off-quantum rotation value raises `ValueError` before mutation."""
+    model = WorkspaceModel()
+
+    with pytest.raises(ValueError, match="rotation must be one of"):
+        model.add_component(**_add_kwargs(rotation=45.0))
+
+    # Validation happens before insert; the model stays empty.
+    assert dict(model.components) == {}
+    assert model.is_dirty is False
+
+
+@pytest.mark.unit
+def test_add_component_snaps_sub_epsilon_drifted_rotation_to_canonical() -> None:
+    """Drifted input within ε is snapped to the exact canonical angle.
+
+    `math.degrees(3 * math.pi / 2)` is `270.0` plus sub-ULP drift in
+    practice; storage must carry the exact canonical `270.0`.
+    """
+    model = WorkspaceModel()
+
+    drifted_270 = math.degrees(3 * math.pi / 2)
+    new_id = model.add_component(**_add_kwargs(rotation=drifted_270))
+
+    assert model.components[new_id].rotation == 270.0
+
+
+# ---------------------------------------------------------------------- #
 # `remove_component` (S1.3c.1)
 # ---------------------------------------------------------------------- #
 
@@ -450,11 +502,12 @@ def test_remove_component_raises_keyerror_for_unknown_id() -> None:
 def test_remove_component_does_not_cascade_to_attached_connections() -> None:
     """Raw `remove_component` is low-level; cascade is the compound
     command's responsibility per ADR-005 (S1.7)."""
+    # TODO(S1.3c.2b): Rewrite using public `add_connection` once available.
     model = WorkspaceModel()
     a = model.add_component(**_add_kwargs())
     b = model.add_component(**_add_kwargs())
     # Connect a→b directly via the internal builder + dict; the public
-    # `add_connection` API is S1.3c.2 and intentionally not used here.
+    # `add_connection` API is S1.3c.2b and intentionally not used here.
     conn = model._build_connection(
         source=PortRef(component_id=a, port_id="p"),
         target=PortRef(component_id=b, port_id="p"),
@@ -565,6 +618,187 @@ def test_move_component_no_op_does_not_update_modified_at() -> None:
     time.sleep(0.001)
 
     model.move_component(new_id, QPointF(50.0, 50.0))
+
+    assert model.components[new_id].modified_at == initial_modified
+
+
+# ---------------------------------------------------------------------- #
+# `rotate_component` (S1.3c.2a)
+# ---------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_rotate_component_updates_rotation() -> None:
+    """`rotate_component` writes the new rotation into the instance."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(rotation=0.0))
+
+    model.rotate_component(new_id, 90.0)
+
+    assert model.components[new_id].rotation == 90.0
+
+
+@pytest.mark.unit
+def test_rotate_component_emits_signal_with_float_payload() -> None:
+    """`componentRotated` payload is `(str, float, float)` per ADR-018."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(rotation=0.0))
+    received: list[tuple[str, float, float]] = []
+    model.componentRotated.connect(lambda *args: received.append(args))
+
+    model.rotate_component(new_id, 180.0)
+
+    assert len(received) == 1
+    cid, old, new = received[0]
+    assert cid == new_id
+    assert isinstance(old, float)
+    assert isinstance(new, float)
+    assert (old, new) == (0.0, 180.0)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("angle", [0.0, 90.0, 180.0, 270.0])
+def test_rotate_component_accepts_phase1_quantized_angles(angle: float) -> None:
+    """All four Phase-1 quantization angles are accepted without error."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(rotation=0.0))
+
+    # Set up a non-zero starting angle so each parameterized run is a
+    # real rotation (no no-op short-circuit from 0.0 → 0.0).
+    if angle == 0.0:
+        model.rotate_component(new_id, 90.0)
+
+    model.rotate_component(new_id, angle)
+
+    assert model.components[new_id].rotation == angle
+
+
+@pytest.mark.unit
+def test_rotate_component_raises_valueerror_for_invalid_rotation() -> None:
+    """An off-quantum rotation value raises `ValueError` before mutation."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(rotation=0.0))
+
+    with pytest.raises(ValueError, match="rotation must be one of"):
+        model.rotate_component(new_id, 45.0)
+
+    # Validation happens before mutation; rotation stays unchanged.
+    assert model.components[new_id].rotation == 0.0
+
+
+@pytest.mark.unit
+def test_rotate_component_snaps_sub_epsilon_drift_to_canonical_angle() -> None:
+    """Sub-ε drifted input is snapped to the canonical exact angle.
+
+    `math.degrees(math.pi / 2)` is `90.0` with sub-ULP drift; storage
+    must carry the exact canonical `90.0`, not the drifted input.
+    """
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(rotation=0.0))
+
+    drifted_90 = math.degrees(math.pi / 2)
+    model.rotate_component(new_id, drifted_90)
+
+    assert model.components[new_id].rotation == 90.0
+
+
+@pytest.mark.unit
+def test_rotate_component_emits_canonical_angle_in_signal() -> None:
+    """Signal payload `new_rotation` is canonical, not caller's drifted input.
+
+    Subscribers consume the delta payload directly per ADR-018 (no
+    refetch for delta-bearing signals), so the value must be exact.
+    """
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(rotation=0.0))
+    received: list[tuple[str, float, float]] = []
+    model.componentRotated.connect(lambda *args: received.append(args))
+
+    drifted_180 = math.degrees(math.pi)
+    model.rotate_component(new_id, drifted_180)
+
+    assert len(received) == 1
+    _cid, _old, new = received[0]
+    assert new == 180.0
+
+
+@pytest.mark.unit
+def test_rotate_component_no_op_for_same_rotation() -> None:
+    """Rotating to the current angle is a no-op: no signal, no mutation."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(rotation=90.0))
+    received: list[Any] = []
+    model.componentRotated.connect(lambda *args: received.append(args))
+
+    model.rotate_component(new_id, 90.0)
+
+    assert received == []
+
+
+@pytest.mark.unit
+def test_rotate_component_no_op_when_both_input_and_current_are_drifted() -> None:
+    """Canonical storage guarantees that two drifted inputs targeting
+    the same canonical angle are detected as a no-op.
+
+    The first `add_component` snaps the input to `90.0` in storage; the
+    second `rotate_component` snaps its drifted input to `90.0` as
+    well, and the no-op check sees `90.0 == 90.0`. Without canonical
+    storage, the comparison would be `drifted_a != drifted_b` and
+    trigger a phantom mutation + emission.
+    """
+    model = WorkspaceModel()
+    drifted_90 = math.degrees(math.pi / 2)
+    new_id = model.add_component(**_add_kwargs(rotation=drifted_90))
+    # Storage now holds the canonical 90.0; pre-condition for the test.
+    assert model.components[new_id].rotation == 90.0
+    received: list[Any] = []
+    model.componentRotated.connect(lambda *args: received.append(args))
+
+    model.rotate_component(new_id, drifted_90)
+
+    assert received == []
+    assert model.components[new_id].rotation == 90.0
+
+
+@pytest.mark.unit
+def test_rotate_component_raises_keyerror_for_unknown_id() -> None:
+    """Unknown component_id raises a plain `KeyError` carrying the id.
+
+    Note: per the module-level validation-order rule, argument
+    validation runs *before* the existence check. A call with an
+    invalid rotation on a missing id raises `ValueError` first. This
+    test uses a valid rotation so we exercise the `KeyError` path.
+    """
+    model = WorkspaceModel()
+
+    with pytest.raises(KeyError) as exc_info:
+        model.rotate_component("cmp_nonexistent", 90.0)
+
+    assert "cmp_nonexistent" in str(exc_info.value)
+
+
+@pytest.mark.unit
+def test_rotate_component_updates_modified_at_timestamp() -> None:
+    """A real rotation bumps `modified_at`."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(rotation=0.0))
+    initial_modified = model.components[new_id].modified_at
+    time.sleep(0.001)
+
+    model.rotate_component(new_id, 90.0)
+
+    assert model.components[new_id].modified_at != initial_modified
+
+
+@pytest.mark.unit
+def test_rotate_component_no_op_does_not_update_modified_at() -> None:
+    """A no-op rotation leaves `modified_at` unchanged."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(rotation=180.0))
+    initial_modified = model.components[new_id].modified_at
+    time.sleep(0.001)
+
+    model.rotate_component(new_id, 180.0)
 
     assert model.components[new_id].modified_at == initial_modified
 
