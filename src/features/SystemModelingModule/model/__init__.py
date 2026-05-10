@@ -40,6 +40,7 @@ from .connection import (
     RoutingStyle,
     Waypoint,
 )
+from .graph_assembler import GraphAssembler
 from .graph_validator import GraphValidator
 from .id_generator import WorkspaceIdGenerator
 from .selection_model import SelectionModel, SelectionSnapshot
@@ -57,6 +58,7 @@ __all__ = [
     "ComponentInstance",
     "Connection",
     "ConnectionRouting",
+    "GraphAssembler",
     "GraphValidator",
     "MotionKind",
     "PhysicalAttributes",

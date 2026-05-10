@@ -25,6 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from shared.graph.port_ref import PortRef
+
 # Routing styles supported in Phase 1 per `02 §16.1`. `bezier` is reserved
 # for a future phase and intentionally excluded from the type alias.
 RoutingStyle = Literal["straight", "orthogonal"]
@@ -33,28 +35,11 @@ RoutingStyle = Literal["straight", "orthogonal"]
 # carry an ordered sequence of them per `02 §16.2`.
 Waypoint = tuple[float, float]
 
-
-@dataclass(frozen=True)
-class PortRef:
-    """Semantic reference to a port on a specific component instance.
-
-    The `(component_id, port_id)` pair is the canonical identity per the
-    S3 rule: index-only references are forbidden. `component_id` is the
-    internal ULID of a `ComponentInstance` (e.g., `cmp_01HV...`);
-    `port_id` is the port identifier defined in the component's
-    `PortDefinition` set (e.g., `"p"`, `"flange_a"`).
-
-    Attributes:
-        component_id: Internal ULID of the referenced component.
-        port_id: Port identifier as declared in the component
-            definition.
-
-    See Also:
-        `02 §13` (Port System), `02 §14.2` (Connection schema).
-    """
-
-    component_id: str
-    port_id: str
+# PortRef is re-exported here for backwards compatibility with existing
+# import sites (`from features.SystemModelingModule.model.connection import
+# PortRef`). The canonical definition lives in `shared/graph/port_ref.py`
+# per `06 §5.3` so cross-feature readers can use it without crossing the
+# architecture boundary into `features/SystemModelingModule/`.
 
 
 @dataclass(frozen=True)
