@@ -95,6 +95,8 @@ from .workspace_change_set import WorkspaceChangeSet
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from shared.registry import ComponentRegistry
+
 
 logger = logging.getLogger(__name__)
 
@@ -370,13 +372,31 @@ class WorkspaceModel(QObject):
     # suppressed and `modelChanged` fires once on outermost exit.
     modelChanged = Signal(WorkspaceChangeSet)
 
-    def __init__(self, parent: QObject | None = None) -> None:
-        """Initialize an empty, clean workspace model."""
+    def __init__(
+        self,
+        parent: QObject | None = None,
+        registry: ComponentRegistry | None = None,
+    ) -> None:
+        """Initialize an empty, clean workspace model.
+
+        Args:
+            parent: Optional Qt parent for ownership.
+            registry: Optional `ComponentRegistry` used by
+                `add_component_from_definition` to resolve definition
+                IDs into `ComponentDefinition` records (S1.B.1d).
+                When `None`, the registry-backed entrypoint raises
+                `RuntimeError`; the explicit-kwarg
+                `add_component` path remains usable regardless.
+                Application bootstrap (S1.9) wires the registry; unit
+                tests that exercise `add_component` directly may omit
+                it.
+        """
         super().__init__(parent)
         self._components: dict[str, ComponentInstance] = {}
         self._connections: dict[str, Connection] = {}
         self._dirty: bool = False
         self._id_generator: WorkspaceIdGenerator = WorkspaceIdGenerator()
+        self._registry: ComponentRegistry | None = registry
         # Batch state: depth counter for nested batches, builder
         # accumulating diff content for the outermost batch only.
         self._batch_depth: int = 0
@@ -575,9 +595,15 @@ class WorkspaceModel(QObject):
         batch awareness (the `componentAdded` signal is suppressed
         inside a batch and the addition is recorded into the
         change_set instead).
+
+        Note:
+            Since S1.B.1d the registry-backed entrypoint
+            `add_component_from_definition` is the preferred way to
+            create instances from library definitions. This
+            explicit-kwarg method is retained for low-level test use
+            and for paths (e.g., project load, migrations) that
+            already carry the resolved fields.
         """
-        # TODO(S1.B): Replace explicit kwargs with ComponentDefinition
-        # lookup once ComponentRegistry is implemented.
         canonical_rotation = _canonical_rotation(rotation)
         instance = self._build_component_instance(
             definition_id=definition_id,
@@ -596,6 +622,118 @@ class WorkspaceModel(QObject):
             annotations=annotations,
             metadata=metadata,
             extensions=extensions,
+        )
+        self._components[instance.id] = instance
+        self._set_dirty()
+        if self._batch_builder is not None:
+            self._batch_builder.record_component_added(instance.id)
+        else:
+            self.componentAdded.emit(instance.id)
+        return instance.id
+
+    def add_component_from_definition(
+        self,
+        definition_id: str,
+        position: QPointF,
+        *,
+        custom_label: str = "",
+        rotation: float = 0.0,
+        parameters: Mapping[str, Any] | None = None,
+        locked: bool = False,
+        tags: tuple[str, ...] = (),
+        annotations: Mapping[str, Any] | None = None,
+    ) -> str:
+        """Add a component sourced from a library `ComponentDefinition`.
+
+        Registry-backed companion to `add_component` introduced in
+        S1.B.1d (decision B1 — new method rather than overloading
+        `add_component`). Resolves `definition_id` through the
+        `ComponentRegistry` supplied at model construction, copies
+        the definition-derived fields (`type`, `display_name`,
+        `domain`, `category`, `visual`, `physical_attributes`) into
+        the new instance per `02 §11.3`, and delegates the rest of
+        the addition flow to the existing `_build_component_instance`
+        path so the dirty flag, batch builder, and `componentAdded`
+        signal behavior remain identical to `add_component`.
+
+        Parameter handling: by default an empty `parameters` mapping
+        is stored on the instance, which per
+        `ComponentInstance.parameters` means "use definition defaults
+        at runtime." Callers that want to set explicit user-edited
+        values at creation time can pass them through the
+        `parameters` kwarg (e.g., for project-load and copy/paste
+        flows in later stages). Parameter validation against the
+        definition schema is the responsibility of `set_parameter`
+        (S1.B.1e); this entrypoint accepts whatever the caller
+        supplies.
+
+        Validation order (consistent with the rest of the mutation
+        API, `02 §3` / `02 §4`):
+
+        1. Argument validation: registry availability (`RuntimeError`
+           if no registry was wired at construction) and rotation
+           canonicalization (raises `ValueError` for off-grid
+           rotations per `_canonical_rotation`).
+        2. Definition lookup: `registry.get(definition_id)` raises
+           `KeyError` for unknown ids.
+        3. Mutation + `_set_dirty()` + signal emission (or batch
+           record), identical to `add_component`.
+
+        Args:
+            definition_id: Dotted-namespace definition id from a
+                registered `ComponentDefinition` (e.g.,
+                `"electrical.analog.components.resistor"`).
+            position: Scene-coordinate placement; canonicalized to a
+                `tuple[float, float]` on the instance per
+                `ComponentInstance.position`.
+            custom_label: Optional user-editable label.
+            rotation: Initial rotation in degrees; restricted to
+                `{0.0, 90.0, 180.0, 270.0}` in Phase 1 per `02 §22`
+                and ADR-018.
+            parameters: Optional explicit per-instance parameter
+                overrides; defaults to empty (definition defaults
+                resolved at runtime).
+            locked: Initial locked flag.
+            tags: Initial tag tuple.
+            annotations: Initial annotations mapping.
+
+        Returns:
+            The newly minted `cmp_<ULID>` instance id.
+
+        Raises:
+            RuntimeError: No `ComponentRegistry` was supplied at
+                construction time.
+            KeyError: `definition_id` is not registered.
+            ValueError: `rotation` is off-grid per `_canonical_rotation`.
+
+        See Also:
+            `01 §6`, `02 §11.3`, ADR-021.
+        """
+        if self._registry is None:
+            raise RuntimeError(
+                "add_component_from_definition requires a ComponentRegistry; "
+                "pass `registry=...` to WorkspaceModel(...)"
+            )
+        definition = self._registry.get(definition_id)
+        canonical_rotation = _canonical_rotation(rotation)
+        instance = self._build_component_instance(
+            definition_id=definition.id,
+            type=definition.display_name,
+            display_name=definition.display_name,
+            domain=definition.domain,
+            category=definition.category,
+            position=(position.x(), position.y()),
+            visual=VisualSpec(
+                svg_id=definition.visual.svg_id,
+                variant=definition.visual.default_variant,
+            ),
+            physical_attributes=definition.physical_attributes,
+            custom_label=custom_label,
+            rotation=canonical_rotation,
+            parameters=parameters,
+            locked=locked,
+            tags=tags,
+            annotations=annotations,
         )
         self._components[instance.id] = instance
         self._set_dirty()

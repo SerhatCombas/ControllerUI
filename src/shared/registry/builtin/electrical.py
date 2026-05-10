@@ -5,14 +5,18 @@ Schema). Four definitions establish the electrical side of the
 validator + assembler exercise surface:
 
 * `GROUND_ELECTRIC_DEFINITION` — single-port reference component.
-  `physical_attributes` would carry `boundary="fixed"` at instance
-  creation (workspace-side; see `02 §11.2`), but the definition
-  itself just declares the port and parameter set.
-* `RESISTOR_DEFINITION` — two-port symmetric passive.
-* `CAPACITOR_DEFINITION` — two-port symmetric passive.
-* `CONSTANT_VOLTAGE_DEFINITION` — two-port asymmetric source
-  (positive / negative ports; `physical_attributes.source=True`
-  at instance creation).
+  `BoundaryKind` per `02 §11.2` is a mechanical concept; the
+  electrical reference role is recorded by category, not by a
+  `physical_attributes` flag, so the definition carries the
+  default `PhysicalAttributes()`.
+* `RESISTOR_DEFINITION` — two-port symmetric passive
+  (`PhysicalAttributes()` default).
+* `CAPACITOR_DEFINITION` — two-port symmetric passive
+  (`PhysicalAttributes()` default).
+* `CONSTANT_VOLTAGE_DEFINITION` — two-port asymmetric source.
+  `physical_attributes` declares `source=True` /
+  `source_type="constant"` per `02 §11.2`; the workspace inherits
+  these flags at instance creation per `02 §11.3`.
 
 Each `library_path` follows `02 §13`-style tree categorization
 (`("Electrical", "Analog", "Components")` for passives,
@@ -39,6 +43,7 @@ from shared.registry.component_definition import ComponentDefinition
 from shared.registry.library_visual_spec import LibraryVisualSpec
 from shared.registry.parameter_definition import ParameterDefinition
 from shared.registry.port_definition import PortDefinition
+from shared.types.physical_attributes import PhysicalAttributes
 
 # ---------------------------------------------------------------------- #
 # Ground Electric — single-port reference
@@ -191,6 +196,7 @@ CONSTANT_VOLTAGE_DEFINITION = ComponentDefinition(
         ),
     ),
     visual=LibraryVisualSpec(svg_id="electrical_constant_voltage_default"),
+    physical_attributes=PhysicalAttributes(source=True, source_type="constant"),
 )
 
 

@@ -5,11 +5,15 @@ Schema). Three definitions establish the mechanical side of the
 validator + assembler exercise surface:
 
 * `FIXED_DEFINITION` — single-port reference (analog of Ground
-  Electric in the mechanical domain). At instance creation,
-  `physical_attributes.boundary="fixed"` per `02 §11.2`.
+  Electric in the mechanical domain).
+  `physical_attributes=PhysicalAttributes(boundary="fixed",
+  motion="translational")` per `02 §11.2` / `02 §11.3`; the
+  workspace inherits these flags at instance creation.
 * `MASS_DEFINITION` — single-port translational mass with a
   parameter for the mass quantity.
+  `physical_attributes.motion="translational"`.
 * `SPRING_DEFINITION` — two-port symmetric spring.
+  `physical_attributes.motion="translational"`.
 
 Each `library_path` follows `02 §13`-style tree categorization
 under `("Mechanical", "Translational", "Components")`. Definition
@@ -31,6 +35,7 @@ from shared.registry.component_definition import ComponentDefinition
 from shared.registry.library_visual_spec import LibraryVisualSpec
 from shared.registry.parameter_definition import ParameterDefinition
 from shared.registry.port_definition import PortDefinition
+from shared.types.physical_attributes import PhysicalAttributes
 
 # ---------------------------------------------------------------------- #
 # Fixed — single-port mechanical reference
@@ -59,6 +64,7 @@ FIXED_DEFINITION = ComponentDefinition(
     ),
     parameters=(),
     visual=LibraryVisualSpec(svg_id="mechanical_fixed_default"),
+    physical_attributes=PhysicalAttributes(boundary="fixed", motion="translational"),
 )
 
 # ---------------------------------------------------------------------- #
@@ -95,6 +101,7 @@ MASS_DEFINITION = ComponentDefinition(
         ),
     ),
     visual=LibraryVisualSpec(svg_id="mechanical_mass_default"),
+    physical_attributes=PhysicalAttributes(motion="translational"),
 )
 
 # ---------------------------------------------------------------------- #
@@ -137,6 +144,7 @@ SPRING_DEFINITION = ComponentDefinition(
         ),
     ),
     visual=LibraryVisualSpec(svg_id="mechanical_spring_default"),
+    physical_attributes=PhysicalAttributes(motion="translational"),
 )
 
 

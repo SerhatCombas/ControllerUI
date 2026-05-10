@@ -38,6 +38,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from shared.types.physical_attributes import PhysicalAttributes
+
 if TYPE_CHECKING:
     from shared.types.domain import DomainId
 
@@ -84,6 +86,13 @@ class ComponentDefinition:
             and generated docs.
         tags: Free-form tags for search / filter (e.g.,
             `("electrical", "passive")`).
+        physical_attributes: Declared physical-attribute flags per
+            `02 §11.2` / `02 §11.3` (boundary, motion, directional,
+            source, source_type). Applied as the instance default at
+            `WorkspaceModel.add_component_from_definition` time.
+            Defaults to an empty `PhysicalAttributes()` (all-None /
+            False), suitable for passive electrical components and
+            similar.
         equation_metadata: Reserved for Phase 2+ equation
             extraction. Phase 1 value is always `None` per
             ADR-001 (engine isolation).
@@ -109,6 +118,7 @@ class ComponentDefinition:
     short_name: str = ""
     description: str = ""
     tags: tuple[str, ...] = ()
+    physical_attributes: PhysicalAttributes = field(default_factory=PhysicalAttributes)
     equation_metadata: None = None
     probe_metadata: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)

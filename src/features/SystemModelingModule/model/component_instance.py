@@ -22,14 +22,22 @@ References:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
-# Type aliases for the constrained physical-attribute enums. The closed-set
-# values come from `02 §11.2`; using `Literal` lets mypy enforce them at the
-# type-check layer without runtime overhead.
-BoundaryKind = Literal["free", "fixed", "constrained"]
-MotionKind = Literal["translational", "rotational"]
-SourceKind = Literal["constant", "step", "ramp", "sine", "signal", "random"]
+# PhysicalAttributes and its closed-set enums (BoundaryKind, MotionKind,
+# SourceKind) live in `shared/types/physical_attributes.py` per `06 §5.5`
+# so that `ComponentDefinition` (in `shared/registry/`) can declare a
+# `physical_attributes` default per `02 §11.3` without crossing the
+# architecture boundary into `features/`. They are re-exported here for
+# backwards compatibility with existing import sites
+# (`from features.SystemModelingModule.model.component_instance import
+# PhysicalAttributes, BoundaryKind, ...`).
+from shared.types.physical_attributes import (
+    BoundaryKind,
+    MotionKind,
+    PhysicalAttributes,
+    SourceKind,
+)
 
 
 @dataclass(frozen=True)
@@ -49,32 +57,6 @@ class VisualSpec:
 
     svg_id: str
     variant: str = "default"
-
-
-@dataclass(frozen=True)
-class PhysicalAttributes:
-    """Declared physical-attribute flags for a component instance.
-
-    Values in Phase 1 originate from definition-level defaults (see
-    `02 §11.3`). The user does not edit these directly in Phase 1.
-
-    Attributes:
-        boundary: Mechanical boundary condition; `None` when not
-            applicable (e.g., electrical components).
-        motion: Type of motion supported; `None` when not applicable.
-        directional: True when behavior is direction-sensitive
-            (e.g., diodes, force sources). Defaults to False.
-        source: True when the component injects energy or signal into
-            the system. Defaults to False.
-        source_type: Source-signal subtype when `source` is True;
-            `None` otherwise. Defaults to None.
-    """
-
-    boundary: BoundaryKind | None = None
-    motion: MotionKind | None = None
-    directional: bool = False
-    source: bool = False
-    source_type: SourceKind | None = None
 
 
 @dataclass(frozen=True)
