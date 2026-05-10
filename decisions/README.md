@@ -33,7 +33,7 @@ When a spec document conflicts with an ADR file, the spec wins. ADR files are th
 
 ## Index
 
-The 17 canonical ADRs (per `06_data_flow_and_architecture.md` §19):
+The 20 canonical ADRs (per `06_data_flow_and_architecture.md` §19):
 
 | # | Title | Stage | Status |
 |---|---|---|---|
@@ -54,6 +54,9 @@ The 17 canonical ADRs (per `06_data_flow_and_architecture.md` §19):
 | 015 | Result Panel Unified With Grouped Dropdown | S6 | Accepted |
 | 016 | channel_selection.kind Schema | S2 | Accepted |
 | 017 | Mirror Sync Plot Dropdowns | S2 | Accepted |
+| 018 | WorkspaceModel Signal Payload Contracts | S1 | Accepted |
+| 019 | Batch Mutation Mode and WorkspaceChangeSet | S1 | Accepted |
+| 020 | Dirty Tracking Semantics | S1 | Accepted |
 
 ## Adding a New ADR
 
@@ -94,4 +97,4 @@ The number is permanent; the slug should match the canonical title.
 
 ## Tests
 
-The CI architecture wave includes a test (`tests/architecture/test_adr_files_present.py`) that verifies all 17 canonical ADRs exist as files in this folder. Adding new ADRs requires updating that test list.
+The CI architecture wave includes a test (`tests/architecture/test_adr_files_present.py`) that verifies all 20 canonical ADRs exist as files in this folder. Adding new ADRs requires updating that test list.

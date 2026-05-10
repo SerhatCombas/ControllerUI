@@ -1,6 +1,6 @@
-"""Architecture test: 17 canonical ADR files present.
+"""Architecture test: 20 canonical ADR files present.
 
-Verifies that all 17 ADRs referenced in `06_data_flow_and_architecture.md`
+Verifies that all 20 ADRs referenced in `06_data_flow_and_architecture.md`
 §19 exist as files in `decisions/` with matching filenames.
 
 Per `decisions/README.md`, `08_codex_execution_rules.md` §8, and
@@ -16,7 +16,7 @@ import pytest
 
 DECISIONS_ROOT = Path("decisions")
 
-# The canonical 17 ADRs from `06 §19`.
+# The canonical 20 ADRs from `06 §19`.
 CANONICAL_ADRS = [
     "ADR-001-phase1-engine-isolation.md",
     "ADR-002-hybrid-ulid-identity-model.md",
@@ -35,6 +35,9 @@ CANONICAL_ADRS = [
     "ADR-015-result-panel-unified-with-grouped-dropdown.md",
     "ADR-016-channel-selection-kind-schema.md",
     "ADR-017-mirror-sync-plot-dropdowns.md",
+    "ADR-018-signal-payload-contracts.md",
+    "ADR-019-batch-mutation-and-changeset.md",
+    "ADR-020-dirty-tracking-semantics.md",
 ]
 
 REQUIRED_HEADERS = ("Status:", "Date:", "Context", "Decision", "Consequences")
@@ -71,7 +74,7 @@ def test_decisions_template_exists() -> None:
 
 @pytest.mark.architecture
 def test_all_canonical_adrs_present() -> None:
-    """All 17 canonical ADRs from `06 §19` exist in `decisions/`."""
+    """All 20 canonical ADRs from `06 §19` exist in `decisions/`."""
     if not DECISIONS_ROOT.is_dir():
         pytest.skip("decisions/ folder not yet present.")
     

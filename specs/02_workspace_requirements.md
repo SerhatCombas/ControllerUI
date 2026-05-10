@@ -97,6 +97,11 @@ The application must use Qt signals/slots for synchronization between the data l
 * `modelReset()`
 * `dirtyChanged(is_dirty)`
 
+**Signal payload contracts and the 13th signal:**
+
+* Payload types and the delta-vs-id-only design principle for the 12 fine-grained signals above are codified by **ADR-018**. The signal contract requires synchronous emission (post-mutation, same-thread); multi-threaded mutation is deferred to a future ADR amendment.
+* A 13th coarse-grained signal `modelChanged(change_set: WorkspaceChangeSet)` is defined by **ADR-019** for batch operations. It emits exactly once on the outermost batch exit and is mutually exclusive with the 12 fine-grained signals: fine-grained signals fire outside any batch; `modelChanged` fires inside a batch. Together, `WorkspaceModel` emits 13 signals total (12 fine-grained + 1 batch-level).
+
 ### 4.2 UI Reaction Rules
 
 The scene must subscribe to these signals and update visual items accordingly.
@@ -1426,6 +1431,8 @@ Non-dirty operations:
 After successful save, dirty becomes false.
 If undo returns the document to the saved state, dirty should become false.
 Recovered autosave files should open as dirty until explicitly saved.
+
+**Dirty tracking semantics:** the meaningful-edit principle, no-op suppression with ε=1e-6 tolerance for `QPointF`/`float` (exact `==` for other types), transition-only `dirtyChanged` emission, the constructor-clean rule, and the Phase 1 clear paths (`reset()` in S1.3, save in S2, undo-to-clean in S1.7 via `QUndoStack.cleanState`) are codified by **ADR-020**. Save-clean atomicity (the snapshot/write/setClean ordering) is recorded as a constraint there, with the exact mechanism deferred to the S2 persistence work.
 
 ### 29.8 File Concurrency
 

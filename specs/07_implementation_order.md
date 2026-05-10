@@ -2435,7 +2435,61 @@ Must verify:
 - changes propagate in both directions
 - save/load preserves a single coherent state
 
-### 16.18 Cross-Cutting ADRs (Result Artifact Immutability and HDF5 Storage)
+### 16.18 ADR-018 — WorkspaceModel Signal Payload Contracts
+
+Relevant stages:
+
+- S1
+- S2 (UI subscriber discipline preserved during persistence work)
+
+Must verify:
+
+- the 12 fine-grained signals carry the payload types specified in ADR-018
+- `componentRotated` payload is `(str, float, float)`, not `(str, int, int)`
+- subscribers refetch via model query only inside `componentChanged` / `componentAdded` / `connectionChanged` / `connectionAdded` slots
+- subscribers do not mutate the model from inside a slot
+- signal emission is synchronous (no queued cross-thread emission)
+- multi-threaded signal emission is rejected; future work requires ADR amendment
+
+### 16.19 ADR-019 — Batch Mutation Mode and WorkspaceChangeSet
+
+Relevant stages:
+
+- S1
+- S2 (project load / `from_dict` uses batch)
+
+Must verify:
+
+- `modelChanged(change_set)` is the 13th signal; mutually exclusive with the 12 fine-grained signals
+- `WorkspaceChangeSet` is frozen, slots, and exposes `is_empty()`
+- empty batches do not emit `modelChanged`
+- `reset_required=True` clears all other diff fields; subscribers check it first
+- diff aggregation rules: add+remove → net zero; add+change → added only; exists+change+remove → removed only
+- batch validation runs once on outermost exit, not per mutation
+- subscriber exceptions during emission do not mask caller exceptions
+- Mode B (best-effort commit) is the exception path; transactional rollback delegated to `QUndoStack.beginMacro`/`endMacro`
+- selection signals are NOT suppressed during a batch (`selectionChanged` emits independently)
+
+### 16.20 ADR-020 — Dirty Tracking Semantics
+
+Relevant stages:
+
+- S1 (`reset()` clear path)
+- S1.7 (`QUndoStack.cleanState` binding)
+- S2 (save clear path; save-clean atomicity)
+
+Must verify:
+
+- newly constructed `WorkspaceModel` is clean; no `dirtyChanged` at construction
+- `dirtyChanged` emits on transitions only, not on every mutation
+- no-op suppression uses ε=1e-6 tolerance for `QPointF` and `float`; exact `==` for other types
+- `set_parameter` dispatches equality per parameter schema (S1.6)
+- selection / validation / view changes do not mark dirty
+- `reset()` clears dirty in S1.3
+- save-clean atomicity is enforced when persistence lands in S2
+- autosave-recovery path explicitly sets `dirty=True`; normal load leaves model clean
+
+### 16.21 Cross-Cutting ADRs (Result Artifact Immutability and HDF5 Storage)
 
 These items are covered by Stage acceptance criteria and Forbidden Anti-Patterns rather than as separate ADRs. They remain enforced via:
 
@@ -2907,7 +2961,7 @@ Full time-series data remains in HDF5.
 Related documents:
 
 - `05_simulation_and_results_requirements.md`
-- §16.18 cross-cutting HDF5 storage rules
+- §16.21 cross-cutting HDF5 storage rules
 
 ### 22.4 Plot Renderer Backend
 

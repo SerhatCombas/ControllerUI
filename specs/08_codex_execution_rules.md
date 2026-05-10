@@ -1096,7 +1096,7 @@ results/*.h5
 
 The AI agent must check applicable ADRs before code changes. The full ADR catalog and per-ADR verification rules are in `07_implementation_order.md` §16. This section maps each stage to its applicable ADRs.
 
-The 17 canonical ADRs (per `06_data_flow_and_architecture.md` §19):
+The 20 canonical ADRs (per `06_data_flow_and_architecture.md` §19):
 
 | ADR | Title |
 |---|---|
@@ -1117,6 +1117,9 @@ The 17 canonical ADRs (per `06_data_flow_and_architecture.md` §19):
 | ADR-015 | Result Panel Unified With Grouped Dropdown |
 | ADR-016 | channel_selection.kind Schema |
 | ADR-017 | Mirror Sync Plot Dropdowns |
+| ADR-018 | WorkspaceModel Signal Payload Contracts |
+| ADR-019 | Batch Mutation Mode and WorkspaceChangeSet |
+| ADR-020 | Dirty Tracking Semantics |
 
 If ADR files do not exist yet, the agent must preserve the decisions below as de facto ADRs.
 
@@ -1146,6 +1149,9 @@ S1 must comply with:
 - ADR-003 Workspace UI/Data Separation (§16.3)
 - ADR-005 Command Stack with QUndoStack (§16.5)
 - ADR-008 Bond Graph Causality (§16.8) — preparation fields only, no causality assignment yet
+- ADR-018 WorkspaceModel Signal Payload Contracts (§16.18)
+- ADR-019 Batch Mutation Mode and WorkspaceChangeSet (§16.19)
+- ADR-020 Dirty Tracking Semantics (§16.20)
 
 Critical S1 rules from these ADRs:
 
@@ -1154,6 +1160,9 @@ Critical S1 rules from these ADRs:
 - all user edits go through `QUndoCommand`-based commands
 - domain compatibility is enforced before connection mutation
 - Bond Graph metadata fields are reserved in connection style/extensions but not interpreted
+- ADR-018: `WorkspaceModel` signals carry exactly the payload types defined in §16.18; subscribers MUST NOT mutate the model from inside a slot
+- ADR-019: batch mode (`with model.batch():`) emits `modelChanged` once on outermost exit; the 12 fine-grained signals are suppressed inside a batch (see §16.19)
+- ADR-020: `dirtyChanged` emits on transitions only; no-op suppression uses ε=1e-6 tolerance for `QPointF`/`float` (see §16.20)
 
 ### 8.3 S2 ADR Compliance
 

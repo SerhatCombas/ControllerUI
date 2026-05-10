@@ -302,7 +302,7 @@ The architecture wave includes tests that verify:
 * `tests/architecture/test_no_engine_in_features.py` — Phase 1 features do not import `shared.engine`
 * `tests/architecture/test_error_catalog.py` — every raised error code is in `11_error_code_catalog.md`
 * `tests/architecture/test_logging_events.py` — every `extra["event"]` value is in `shared/utils/logging_events.py`
-* `tests/architecture/test_adr_files_present.py` — all 17 ADRs referenced in `06 §19` exist as files in `decisions/`
+* `tests/architecture/test_adr_files_present.py` — all 20 ADRs referenced in `06 §19` exist as files in `decisions/`
 
 These tests are cheap and fail fast when invariants are broken.
 
