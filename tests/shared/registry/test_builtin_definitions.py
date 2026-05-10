@@ -17,8 +17,10 @@ History of growth (the tuple expands as S1.B.2 stages land):
   (+damper, +spring_damper, +wheel_black, +wheel_white) plus the
   Spring schema bump (+free_length parameter), bringing the
   tuple to 18.
-* S1.B.2c-d — mechanical sources and sensors (force_source,
-  step_force_source, position/velocity/force sensors).
+* S1.B.2c — MVP mechanical sources (+force_source,
+  +step_force_source), bringing the tuple to 20. Random Road
+  Source is marked optional per `01 §13.5` and is deferred.
+* S1.B.2d — mechanical sensors (position/velocity/force).
 
 Covers:
 
@@ -50,6 +52,7 @@ from shared.registry.builtin import (
     CURRENT_SENSOR_DEFINITION,
     DAMPER_DEFINITION,
     FIXED_DEFINITION,
+    FORCE_SOURCE_DEFINITION,
     GROUND_ELECTRIC_DEFINITION,
     INDUCTOR_DEFINITION,
     MASS_DEFINITION,
@@ -59,6 +62,7 @@ from shared.registry.builtin import (
     SINE_VOLTAGE_DEFINITION,
     SPRING_DAMPER_DEFINITION,
     SPRING_DEFINITION,
+    STEP_FORCE_SOURCE_DEFINITION,
     STEP_VOLTAGE_DEFINITION,
     VOLTAGE_SENSOR_DEFINITION,
     WHEEL_BLACK_DEFINITION,
@@ -91,6 +95,12 @@ _EXPECTED_DEFINITION_IDS: tuple[tuple[str, ComponentDefinition], ...] = (
     ),
     ("mechanics.translational.components.wheel_black", WHEEL_BLACK_DEFINITION),
     ("mechanics.translational.components.wheel_white", WHEEL_WHITE_DEFINITION),
+    # Mechanical Translational / Sources (2; sensors in S1.B.2d)
+    ("mechanics.translational.sources.force_source", FORCE_SOURCE_DEFINITION),
+    (
+        "mechanics.translational.sources.step_force_source",
+        STEP_FORCE_SOURCE_DEFINITION,
+    ),
 )
 
 # Source definitions and their expected source_type, derived from the
@@ -103,6 +113,8 @@ _EXPECTED_SOURCE_TYPES: tuple[tuple[ComponentDefinition, str], ...] = (
     (SIGNAL_VOLTAGE_DEFINITION, "signal"),
     (SINE_VOLTAGE_DEFINITION, "sine"),
     (STEP_VOLTAGE_DEFINITION, "step"),
+    (FORCE_SOURCE_DEFINITION, "constant"),
+    (STEP_FORCE_SOURCE_DEFINITION, "step"),
 )
 
 _SENSOR_DEFINITIONS: tuple[ComponentDefinition, ...] = (
@@ -219,10 +231,11 @@ def test_builtin_registry_filters_by_electrical_domain() -> None:
 @pytest.mark.unit
 def test_builtin_registry_filters_by_mechanical_domain() -> None:
     """`by_domain("mechanical_translational")` returns the full Phase-1
-    mechanical components block (S1.B.2b).
+    components block plus the MVP sources (S1.B.2c).
 
-    Mechanical sources and sensors land in S1.B.2c-d; this
-    assertion will grow at those stages.
+    Mechanical sensors land in S1.B.2d; this assertion will grow at
+    that stage. Random Road Source is marked optional per `01 §13.5`
+    and is intentionally absent.
     """
     registry = ComponentRegistry(BUILTIN_COMPONENT_DEFINITIONS)
 
@@ -236,7 +249,30 @@ def test_builtin_registry_filters_by_mechanical_domain() -> None:
         "mechanics.translational.components.spring_damper",
         "mechanics.translational.components.wheel_black",
         "mechanics.translational.components.wheel_white",
+        "mechanics.translational.sources.force_source",
+        "mechanics.translational.sources.step_force_source",
     }
+
+
+# ---------------------------------------------------------------------- #
+# S1.B.2c: mechanical-source `physical_attributes` carries motion AND source
+# ---------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_mechanical_sources_declare_translational_motion_and_source() -> None:
+    """Mechanical sources stack `motion="translational"` on top of the
+    `source=True` flag per `02 §11.2` / `02 §11.3`.
+
+    Unlike electrical sources (where `motion` is `None`), mechanical
+    sources must declare the motion type because consumers downstream
+    use it for boundary / DOF reasoning. This pin asserts that both
+    Phase-1 mechanical sources set both flags consistently.
+    """
+    for definition in (FORCE_SOURCE_DEFINITION, STEP_FORCE_SOURCE_DEFINITION):
+        assert definition.category == "source"
+        assert definition.physical_attributes.source is True
+        assert definition.physical_attributes.motion == "translational"
 
 
 # ---------------------------------------------------------------------- #

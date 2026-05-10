@@ -5,7 +5,9 @@ Schema). Seven definitions cover the full Phase-1 mechanical-
 translational component block (`01 §13.4`); sources and sensors
 follow in S1.B.2c / S1.B.2d.
 
-Library entries (`01 §13.4`):
+Library entries by subtree:
+
+Components (`01 §13.4`):
 
 * `FIXED_DEFINITION` — single-port reference (analog of Ground
   Electric in the mechanical domain).
@@ -36,6 +38,18 @@ Library entries (`01 §13.4`):
   the library tree; both declare `physical_attributes.motion=
   "translational"`. Ports `flange` (mechanical axle attachment)
   and `road_contact` (translational contact with the ground).
+
+Sources (`01 §13.5`):
+
+* `FORCE_SOURCE_DEFINITION` — single-port translational force
+  source. `physical_attributes` declares `source=True` /
+  `source_type="constant"` (DC force, analogous to Constant
+  Voltage on the electrical side). Parameter `force`.
+* `STEP_FORCE_SOURCE_DEFINITION` — single-port step-transition
+  force source. `physical_attributes` declares `source=True` /
+  `source_type="step"`. Parameters `initial` / `final` /
+  `start_time`. Random Road Source is marked optional per
+  `01 §13.5` and is deferred to a later Phase-1 sub-release.
 
 Each `library_path` follows `02 §13`-style tree categorization
 under `("Mechanical", "Translational", "Components")`. Definition
@@ -408,12 +422,114 @@ WHEEL_WHITE_DEFINITION = ComponentDefinition(
 )
 
 
+# ---------------------------------------------------------------------- #
+# Force Source — single-port DC translational force source
+# ---------------------------------------------------------------------- #
+
+FORCE_SOURCE_DEFINITION = ComponentDefinition(
+    id="mechanics.translational.sources.force_source",
+    display_name="Force Source",
+    short_name="F",
+    description="Constant translational force source.",
+    domain="mechanical_translational",
+    library_path=("Mechanical", "Translational", "Sources"),
+    category="source",
+    tags=("mechanical", "translational", "source"),
+    ports=(
+        PortDefinition(
+            id="flange",
+            display_name="Flange",
+            domain="mechanical_translational",
+            relative_position=(0.5, 1.0),
+        ),
+    ),
+    parameters=(
+        ParameterDefinition(
+            id="force",
+            display_name="Force",
+            symbol="F",
+            type="float",
+            unit="N",
+            default=1.0,
+            description="Applied force magnitude.",
+        ),
+    ),
+    visual=LibraryVisualSpec(svg_id="mechanical_force_source_default"),
+    physical_attributes=PhysicalAttributes(
+        motion="translational",
+        source=True,
+        source_type="constant",
+    ),
+)
+
+# ---------------------------------------------------------------------- #
+# Step Force Source — single-port step-transition force source
+# ---------------------------------------------------------------------- #
+
+STEP_FORCE_SOURCE_DEFINITION = ComponentDefinition(
+    id="mechanics.translational.sources.step_force_source",
+    display_name="Step Force Source",
+    short_name="F",
+    description="Step-transition translational force source.",
+    domain="mechanical_translational",
+    library_path=("Mechanical", "Translational", "Sources"),
+    category="source",
+    tags=("mechanical", "translational", "source", "step"),
+    ports=(
+        PortDefinition(
+            id="flange",
+            display_name="Flange",
+            domain="mechanical_translational",
+            relative_position=(0.5, 1.0),
+        ),
+    ),
+    parameters=(
+        ParameterDefinition(
+            id="initial",
+            display_name="Initial Value",
+            symbol="F0",
+            type="float",
+            unit="N",
+            default=0.0,
+            description="Output force before `start_time`.",
+        ),
+        ParameterDefinition(
+            id="final",
+            display_name="Final Value",
+            symbol="F1",
+            type="float",
+            unit="N",
+            default=1.0,
+            description="Output force at or after `start_time`.",
+        ),
+        ParameterDefinition(
+            id="start_time",
+            display_name="Start Time",
+            symbol="t0",
+            type="float",
+            unit="s",
+            default=0.0,
+            min=0.0,
+            description="Time at which the step transition occurs.",
+        ),
+    ),
+    visual=LibraryVisualSpec(svg_id="mechanical_step_force_source_default"),
+    physical_attributes=PhysicalAttributes(
+        motion="translational",
+        source=True,
+        source_type="step",
+    ),
+)
+
+
 __all__ = [
     "DAMPER_DEFINITION",
     "FIXED_DEFINITION",
+    "FORCE_SOURCE_DEFINITION",
     "MASS_DEFINITION",
     "SPRING_DAMPER_DEFINITION",
     "SPRING_DEFINITION",
+    "STEP_FORCE_SOURCE_DEFINITION",
     "WHEEL_BLACK_DEFINITION",
     "WHEEL_WHITE_DEFINITION",
 ]

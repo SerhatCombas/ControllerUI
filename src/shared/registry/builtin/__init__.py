@@ -1,10 +1,12 @@
 """shared/registry/builtin: Phase 1 built-in component definitions.
 
 Per ADR-021 and `01 §13` MVP list. The current set covers the
-full Phase 1 electrical-analog library (11 definitions) plus the
+full Phase 1 electrical-analog library (11 definitions), the
 full Phase 1 mechanical-translational components block (7
-definitions); mechanical sources and sensors land in S1.B.2c
-and S1.B.2d respectively.
+definitions), and the MVP mechanical-translational sources
+(2 definitions). Random Road Source is marked optional per
+`01 §13.5` and is deferred to a later Phase-1 sub-release.
+Mechanical sensors land in S1.B.2d.
 
 Library subtrees (path → count):
 
@@ -16,6 +18,9 @@ Library subtrees (path → count):
   Voltage, Signal Voltage, Sine Voltage, Step Voltage)
 * Mechanical / Translational / Components — 7 (Fixed, Mass,
   Spring, Damper, Spring Damper, Wheel Black, Wheel White)
+* Mechanical / Translational / Sources — 2 (Force Source,
+  Step Force Source; Random Road Source deferred per
+  `01 §13.5`)
 
 The `BUILTIN_COMPONENT_DEFINITIONS` tuple is the canonical
 construction argument for the default `ComponentRegistry`. A
@@ -55,9 +60,11 @@ from .electrical import (
 from .mechanical import (
     DAMPER_DEFINITION,
     FIXED_DEFINITION,
+    FORCE_SOURCE_DEFINITION,
     MASS_DEFINITION,
     SPRING_DAMPER_DEFINITION,
     SPRING_DEFINITION,
+    STEP_FORCE_SOURCE_DEFINITION,
     WHEEL_BLACK_DEFINITION,
     WHEEL_WHITE_DEFINITION,
 )
@@ -89,6 +96,9 @@ BUILTIN_COMPONENT_DEFINITIONS = (
     SPRING_DAMPER_DEFINITION,
     WHEEL_BLACK_DEFINITION,
     WHEEL_WHITE_DEFINITION,
+    # Mechanical Translational / Sources (2; Random Road Source deferred)
+    FORCE_SOURCE_DEFINITION,
+    STEP_FORCE_SOURCE_DEFINITION,
 )
 
 
@@ -99,6 +109,7 @@ __all__ = [
     "CURRENT_SENSOR_DEFINITION",
     "DAMPER_DEFINITION",
     "FIXED_DEFINITION",
+    "FORCE_SOURCE_DEFINITION",
     "GROUND_ELECTRIC_DEFINITION",
     "INDUCTOR_DEFINITION",
     "MASS_DEFINITION",
@@ -108,6 +119,7 @@ __all__ = [
     "SINE_VOLTAGE_DEFINITION",
     "SPRING_DAMPER_DEFINITION",
     "SPRING_DEFINITION",
+    "STEP_FORCE_SOURCE_DEFINITION",
     "STEP_VOLTAGE_DEFINITION",
     "VOLTAGE_SENSOR_DEFINITION",
     "WHEEL_BLACK_DEFINITION",
