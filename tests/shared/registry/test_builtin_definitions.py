@@ -13,8 +13,12 @@ History of growth (the tuple expands as S1.B.2 stages land):
 * S1.B.2a — full electrical Phase 1 set (+inductor, +current_sensor,
   +voltage_sensor, +ramp_voltage, +signal_voltage, +sine_voltage,
   +step_voltage), bringing the tuple to 14.
-* S1.B.2b-d — mechanical completion (damper, spring_damper, wheels,
-  force sources, sensors).
+* S1.B.2b — full mechanical-translational components block
+  (+damper, +spring_damper, +wheel_black, +wheel_white) plus the
+  Spring schema bump (+free_length parameter), bringing the
+  tuple to 18.
+* S1.B.2c-d — mechanical sources and sensors (force_source,
+  step_force_source, position/velocity/force sensors).
 
 Covers:
 
@@ -44,6 +48,7 @@ from shared.registry.builtin import (
     CAPACITOR_DEFINITION,
     CONSTANT_VOLTAGE_DEFINITION,
     CURRENT_SENSOR_DEFINITION,
+    DAMPER_DEFINITION,
     FIXED_DEFINITION,
     GROUND_ELECTRIC_DEFINITION,
     INDUCTOR_DEFINITION,
@@ -52,9 +57,12 @@ from shared.registry.builtin import (
     RESISTOR_DEFINITION,
     SIGNAL_VOLTAGE_DEFINITION,
     SINE_VOLTAGE_DEFINITION,
+    SPRING_DAMPER_DEFINITION,
     SPRING_DEFINITION,
     STEP_VOLTAGE_DEFINITION,
     VOLTAGE_SENSOR_DEFINITION,
+    WHEEL_BLACK_DEFINITION,
+    WHEEL_WHITE_DEFINITION,
 )
 
 _EXPECTED_DEFINITION_IDS: tuple[tuple[str, ComponentDefinition], ...] = (
@@ -72,10 +80,17 @@ _EXPECTED_DEFINITION_IDS: tuple[tuple[str, ComponentDefinition], ...] = (
     ("electrical.analog.sources.signal_voltage", SIGNAL_VOLTAGE_DEFINITION),
     ("electrical.analog.sources.sine_voltage", SINE_VOLTAGE_DEFINITION),
     ("electrical.analog.sources.step_voltage", STEP_VOLTAGE_DEFINITION),
-    # Mechanical Translational / Components (3; full set in S1.B.2b)
+    # Mechanical Translational / Components (7; sources / sensors in S1.B.2c-d)
     ("mechanics.translational.components.fixed", FIXED_DEFINITION),
     ("mechanics.translational.components.mass", MASS_DEFINITION),
     ("mechanics.translational.components.spring", SPRING_DEFINITION),
+    ("mechanics.translational.components.damper", DAMPER_DEFINITION),
+    (
+        "mechanics.translational.components.spring_damper",
+        SPRING_DAMPER_DEFINITION,
+    ),
+    ("mechanics.translational.components.wheel_black", WHEEL_BLACK_DEFINITION),
+    ("mechanics.translational.components.wheel_white", WHEEL_WHITE_DEFINITION),
 )
 
 # Source definitions and their expected source_type, derived from the
@@ -203,11 +218,11 @@ def test_builtin_registry_filters_by_electrical_domain() -> None:
 
 @pytest.mark.unit
 def test_builtin_registry_filters_by_mechanical_domain() -> None:
-    """`by_domain("mechanical_translational")` returns the S1.B.1c mech defs.
+    """`by_domain("mechanical_translational")` returns the full Phase-1
+    mechanical components block (S1.B.2b).
 
-    The remaining mechanical entries (damper, spring_damper, wheels,
-    force sources, sensors) land in S1.B.2b-d; this assertion will
-    grow at those stages.
+    Mechanical sources and sensors land in S1.B.2c-d; this
+    assertion will grow at those stages.
     """
     registry = ComponentRegistry(BUILTIN_COMPONENT_DEFINITIONS)
 
@@ -217,7 +232,49 @@ def test_builtin_registry_filters_by_mechanical_domain() -> None:
         "mechanics.translational.components.fixed",
         "mechanics.translational.components.mass",
         "mechanics.translational.components.spring",
+        "mechanics.translational.components.damper",
+        "mechanics.translational.components.spring_damper",
+        "mechanics.translational.components.wheel_black",
+        "mechanics.translational.components.wheel_white",
     }
+
+
+# ---------------------------------------------------------------------- #
+# S1.B.2b: Spring schema bump + Wheel Black/White identical-shape checks
+# ---------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_spring_definition_declares_stiffness_and_free_length() -> None:
+    """Spring carries both `stiffness` and `free_length` per `01 §13.0`.
+
+    S1.B.2b added `free_length` so the built-in matches the spec
+    MVP table. The assertion locks the parameter id set rather than
+    the ordering so future re-ordering is safe.
+    """
+    param_ids = {p.id for p in SPRING_DEFINITION.parameters}
+
+    assert param_ids == {"stiffness", "free_length"}
+
+
+@pytest.mark.unit
+def test_wheel_black_and_wheel_white_share_physical_shape() -> None:
+    """Per `01 §13.0` the two wheel definitions are the same physical
+    component type; only their SVG visual differs. This pin asserts
+    that the port-id set, parameter-id set, and `physical_attributes`
+    stay aligned so a future schema drift on one and not the other is
+    caught at test time.
+    """
+    black_ports = {p.id for p in WHEEL_BLACK_DEFINITION.ports}
+    white_ports = {p.id for p in WHEEL_WHITE_DEFINITION.ports}
+    black_params = {p.id for p in WHEEL_BLACK_DEFINITION.parameters}
+    white_params = {p.id for p in WHEEL_WHITE_DEFINITION.parameters}
+
+    assert black_ports == white_ports == {"flange", "road_contact"}
+    assert black_params == white_params == {"radius", "mass"}
+    assert WHEEL_BLACK_DEFINITION.physical_attributes == WHEEL_WHITE_DEFINITION.physical_attributes
+    # Distinct visual assets per `01 §13.0`.
+    assert WHEEL_BLACK_DEFINITION.visual.svg_id != WHEEL_WHITE_DEFINITION.visual.svg_id
 
 
 # ---------------------------------------------------------------------- #

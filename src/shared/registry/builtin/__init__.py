@@ -2,9 +2,9 @@
 
 Per ADR-021 and `01 §13` MVP list. The current set covers the
 full Phase 1 electrical-analog library (11 definitions) plus the
-S1.B.1c mechanical-translational core (3 definitions); the
-remaining mechanical components, sources, and sensors land in
-S1.B.2b through S1.B.2d.
+full Phase 1 mechanical-translational components block (7
+definitions); mechanical sources and sensors land in S1.B.2c
+and S1.B.2d respectively.
 
 Library subtrees (path → count):
 
@@ -14,9 +14,8 @@ Library subtrees (path → count):
   Sensor)
 * Electrical / Analog / Sources — 5 (Constant Voltage, Ramp
   Voltage, Signal Voltage, Sine Voltage, Step Voltage)
-* Mechanical / Translational / Components — 3 (Fixed, Mass,
-  Spring; Damper / Spring Damper / Wheel Black / Wheel White
-  land in S1.B.2b)
+* Mechanical / Translational / Components — 7 (Fixed, Mass,
+  Spring, Damper, Spring Damper, Wheel Black, Wheel White)
 
 The `BUILTIN_COMPONENT_DEFINITIONS` tuple is the canonical
 construction argument for the default `ComponentRegistry`. A
@@ -54,9 +53,13 @@ from .electrical import (
     VOLTAGE_SENSOR_DEFINITION,
 )
 from .mechanical import (
+    DAMPER_DEFINITION,
     FIXED_DEFINITION,
     MASS_DEFINITION,
+    SPRING_DAMPER_DEFINITION,
     SPRING_DEFINITION,
+    WHEEL_BLACK_DEFINITION,
+    WHEEL_WHITE_DEFINITION,
 )
 
 # Canonical tuple of all Phase 1 built-in definitions, in
@@ -78,10 +81,14 @@ BUILTIN_COMPONENT_DEFINITIONS = (
     SIGNAL_VOLTAGE_DEFINITION,
     SINE_VOLTAGE_DEFINITION,
     STEP_VOLTAGE_DEFINITION,
-    # Mechanical Translational / Components (3 — full set lands in S1.B.2b)
+    # Mechanical Translational / Components (7)
     FIXED_DEFINITION,
     MASS_DEFINITION,
     SPRING_DEFINITION,
+    DAMPER_DEFINITION,
+    SPRING_DAMPER_DEFINITION,
+    WHEEL_BLACK_DEFINITION,
+    WHEEL_WHITE_DEFINITION,
 )
 
 
@@ -90,6 +97,7 @@ __all__ = [
     "CAPACITOR_DEFINITION",
     "CONSTANT_VOLTAGE_DEFINITION",
     "CURRENT_SENSOR_DEFINITION",
+    "DAMPER_DEFINITION",
     "FIXED_DEFINITION",
     "GROUND_ELECTRIC_DEFINITION",
     "INDUCTOR_DEFINITION",
@@ -98,7 +106,10 @@ __all__ = [
     "RESISTOR_DEFINITION",
     "SIGNAL_VOLTAGE_DEFINITION",
     "SINE_VOLTAGE_DEFINITION",
+    "SPRING_DAMPER_DEFINITION",
     "SPRING_DEFINITION",
     "STEP_VOLTAGE_DEFINITION",
     "VOLTAGE_SENSOR_DEFINITION",
+    "WHEEL_BLACK_DEFINITION",
+    "WHEEL_WHITE_DEFINITION",
 ]
