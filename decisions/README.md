@@ -79,6 +79,32 @@ ADRs are immutable but can be superseded:
 
 The "edit metadata" step is the **only** allowed change to an accepted ADR.
 
+## Non-ADR Documents in This Folder
+
+This folder may contain dated design documents that are **not** ADRs:
+
+* **Naming**: `YYYY-MM-DD_slug.md` (dated lowercase, distinct from
+  `ADR-NNN-slug.md`).
+* **Purpose**: findings, handoff notes, or pre-ADR exploration that
+  may evolve into formal ADRs but are not yet architectural decisions.
+* **Authority**: below ADRs in `08 §3.1`; informational and advisory.
+* **Promotion**: if a dated note matures into a formal decision,
+  `git mv` it to `ADR-NNN-slug.md`, convert to the ADR template
+  (`_template.md`), and reference the original in the new ADR's
+  `Context` section.
+
+The `tests/architecture/test_adr_files_present.py` test does **not**
+gate on these files; it counts only the canonical `ADR-NNN-*.md`
+filenames, so dated notes can come and go without architecture-test
+churn.
+
+Current non-ADR documents in this folder:
+
+| File | Subject |
+|---|---|
+| `2026-05-05_s3-s5-handoff-design.md` | S3 to S5 handoff design (architecture test invariants) |
+| `2026-05-10_pyside6-signal-exception-dispatch.md` | PySide6 signal exception dispatch finding (S1.3d follow-up) |
+
 ## Naming Convention
 
 ADR files follow this pattern:
