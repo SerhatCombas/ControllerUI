@@ -48,9 +48,7 @@ from .validation_report import (
     ValidationReport,
     ValidationSeverity,
 )
-
-# WorkspaceModel will be re-exported here once S1.3 lands:
-# from .workspace_model import WorkspaceModel
+from .workspace_model import WorkspaceModel
 
 __all__ = [
     "BoundaryKind",
@@ -71,4 +69,5 @@ __all__ = [
     "VisualSpec",
     "Waypoint",
     "WorkspaceIdGenerator",
+    "WorkspaceModel",
 ]
