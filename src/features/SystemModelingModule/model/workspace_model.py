@@ -24,15 +24,16 @@ Phase 1 build order within S1.3:
   `_canonical_rotation` helper, `rotate_component`.
 * S1.3c.2b: five component property setters and three connection
   mutations.
-* S1.3d (this commit): `batch()` context manager + 13th signal
+* S1.3d: `batch()` context manager + 13th signal
   `modelChanged(WorkspaceChangeSet)` per ADR-019 + minimal `reset()`
-  with batch interaction. Mutation methods become batch-aware:
-  inside a batch, individual fine-grained signals are suppressed and
-  the change is recorded into a `_ChangeSetBuilder`; on outermost
-  exit, exactly one `modelChanged(change_set)` is emitted (provided
-  the change_set is not empty).
-* S1.3e: extended `reset()` semantics + `_clear_dirty()` + dirty-
-  clear-on-reset edge cases.
+  with batch interaction. Mutation methods became batch-aware.
+* S1.3e (this commit): `_clear_dirty()` private helper, symmetric
+  to `_set_dirty()` (ADR-020 transition-only rule). `reset()` is
+  refactored to delegate dirty-clearing to the helper rather than
+  setting `self._dirty = False` directly. Per Yorum A, `reset()`
+  re-creates the `WorkspaceIdGenerator`, so the next component
+  added after a reset receives a display ID counter starting from
+  `1` again (blank-slate semantics).
 
 Validation order in mutation methods (consistent across S1.3c.x):
 
@@ -496,9 +497,20 @@ class WorkspaceModel(QObject):
         """Reset the workspace to an empty, clean state.
 
         Clears components, connections, the dirty flag, and the ID
-        generator. Outside a batch, emits `modelReset()` and (if the
-        model was dirty) `dirtyChanged(False)` per ADR-020 transition
-        rule.
+        generator. The ID generator is **re-created** rather than
+        reused (Yorum A: blank-slate semantics) — the next component
+        added after a reset receives a display-ID counter starting
+        from `1` again, regardless of how many components were
+        present before the reset.
+
+        Dirty clearing is delegated to `_clear_dirty()` (symmetric to
+        `_set_dirty()`); per ADR-020 transition-only rule, a
+        `dirtyChanged(False)` emission only occurs if the model was
+        actually dirty before the reset.
+
+        Outside a batch, emits `modelReset()` (always, regardless of
+        prior dirty state) and `dirtyChanged(False)` (only on dirty→
+        clean transition).
 
         Inside a batch, per ADR-019 §"Reset semantics inside a
         batch": all queued mutations are discarded from the
@@ -508,27 +520,29 @@ class WorkspaceModel(QObject):
         `modelReset` signal is NOT emitted inside a batch — the
         single `modelChanged(change_set)` with `reset_required=True`
         on outermost exit is the canonical notification.
-
-        S1.3e will extend this with `_clear_dirty()` and edge-case
-        coverage; the S1.3d implementation is minimal but compatible
-        with the batch interaction described above.
+        `_clear_dirty()` is called inside a batch as well; its
+        `mark_dirty_changed()` write to the builder is a no-op once
+        `signal_reset()` has set `reset_required=True`, so the
+        change_set's `dirty_changed` flag stays `False` (consistent
+        with ADR-019's "reset_required wins; other diff fields
+        empty" rule).
         """
-        was_dirty = self._dirty
         self._components.clear()
         self._connections.clear()
         self._id_generator = WorkspaceIdGenerator()
-        self._dirty = False
 
         if self._batch_builder is not None:
-            # Inside a batch: nuke queued state and mark reset_required.
-            # Do NOT emit individual signals; outermost batch exit will
-            # carry the reset notification.
+            # Inside a batch: nuke queued state first, then clear
+            # dirty (which is a no-op on the builder due to
+            # reset_required). Do NOT emit modelReset; outermost
+            # batch exit will carry the reset notification.
             self._batch_builder.signal_reset()
+            self._clear_dirty()
             return
 
-        # Outside a batch: emit transitions per ADR-020.
-        if was_dirty:
-            self.dirtyChanged.emit(False)
+        # Outside a batch: clear dirty (transition emits if needed)
+        # then emit modelReset.
+        self._clear_dirty()
         self.modelReset.emit()
 
     # ------------------------------------------------------------------ #
@@ -922,6 +936,35 @@ class WorkspaceModel(QObject):
             self._batch_builder.mark_dirty_changed()
         else:
             self.dirtyChanged.emit(True)
+
+    def _clear_dirty(self) -> None:
+        """Transition dirty `True → False`; batch-aware emission.
+
+        Symmetric to `_set_dirty`. Per ADR-020 transition-only rule:
+        if already clean, no-op (no extra emission). Outside a batch,
+        emits `dirtyChanged(False)`. Inside a batch, marks the
+        change_set's `dirty_changed` aggregate flag (which is itself
+        a no-op once `signal_reset()` has set `reset_required=True`
+        on the builder, so reset-clear sequences leave
+        `change_set.dirty_changed=False` per ADR-019's
+        "reset_required wins; other diff fields empty" rule).
+
+        Used by `reset()` (S1.3e), and (in S2) the save path. In
+        S1.7 this helper will be replaced by a
+        `QUndoStack.cleanChanged` binding per ADR-020 §"QUndoStack
+        integration"; until then, this is the only public-API path
+        that flips the flag back to clean.
+
+        TODO(S1.7): Bind to `QUndoStack.cleanChanged` so the command
+        stack is the canonical clean-state authority.
+        """
+        if not self._dirty:
+            return
+        self._dirty = False
+        if self._batch_builder is not None:
+            self._batch_builder.mark_dirty_changed()
+        else:
+            self.dirtyChanged.emit(False)
 
 
 def _canonical_rotation(rotation: float) -> float:

@@ -563,6 +563,44 @@ def test_reset_outside_batch_on_clean_model_does_not_emit_dirty_changed() -> Non
     assert dirty_emissions == []
 
 
+@pytest.mark.unit
+def test_reset_outside_batch_on_clean_model_still_emits_model_reset() -> None:
+    """`reset()` always emits `modelReset()` outside a batch, even on a
+    clean model. The signal denotes "rebuild the scene from the model"
+    (now empty); it is not gated on prior dirty state.
+    """
+    model = WorkspaceModel()
+    reset_emissions: list[None] = []
+    model.modelReset.connect(lambda: reset_emissions.append(None))
+
+    model.reset()
+
+    assert len(reset_emissions) == 1
+
+
+@pytest.mark.unit
+def test_reset_resets_id_generator_to_blank_slate() -> None:
+    """Per Yorum A (S1.3e): `reset()` re-creates the ID generator, so
+    the next component added after a reset receives a display-ID
+    counter starting from `1` again, not from the previous
+    high-water mark.
+
+    Without blank-slate semantics, a fresh resistor after a reset
+    would receive `resistor_4` (or similar) — a confusing UX after
+    "discard everything and start over." Blank-slate aligns with
+    user expectation of `reset()` = "new project".
+    """
+    model = WorkspaceModel()
+    model.add_component(**_add_kwargs())  # resistor_1
+    model.add_component(**_add_kwargs())  # resistor_2
+    model.add_component(**_add_kwargs())  # resistor_3
+
+    model.reset()
+    new_id = model.add_component(**_add_kwargs())
+
+    assert model.components[new_id].display_id == "resistor_1"
+
+
 # ---------------------------------------------------------------------- #
 # `reset()` inside a batch (ADR-019 reset semantics)
 # ---------------------------------------------------------------------- #

@@ -1,4 +1,4 @@
-"""Unit tests for `WorkspaceModel` (S1.3a + S1.3b + S1.3c.1 + S1.3c.2a + S1.3c.2b).
+"""Unit tests for `WorkspaceModel` (S1.3a + S1.3b + S1.3c.1 + S1.3c.2a + S1.3c.2b + S1.3e).
 
 Covers (cumulative):
 
@@ -27,8 +27,16 @@ Covers (cumulative):
   `connectionChanged` emission. `add_connection` is a low-level raw
   mutation with no duplicate detection (validator chain documented
   in the docstring).
+* S1.3e (dirty-bit helpers only here) — `_clear_dirty()` is the
+  symmetric counterpart to `_set_dirty()` per ADR-020 transition-only
+  rule. A 2x2 parametrized grid (helper x initial dirty state) plus
+  individual idempotency / transition tests fully exercise the
+  non-batch path.
 
-Batch mode (S1.3d) and `reset()` (S1.3e) are out of scope.
+Batch mode (S1.3d) and `reset()` semantics (S1.3d/e) — including
+batch-aware `_set_dirty` / `_clear_dirty` interaction and `reset()`
+ID-generator blank-slate behavior — live in
+`test_workspace_model_batch.py`.
 
 References
 ----------
@@ -1310,7 +1318,7 @@ def test_update_connection_raises_keyerror_for_unknown_id() -> None:
 
 
 # ---------------------------------------------------------------------- #
-# Dirty-bit helper (S1.3c.1)
+# Dirty-bit helpers (S1.3c.1 + S1.3e)
 # ---------------------------------------------------------------------- #
 
 
@@ -1327,3 +1335,80 @@ def test_set_dirty_helper_is_idempotent() -> None:
 
     assert received == [True]
     assert model.is_dirty is True
+
+
+@pytest.mark.unit
+def test_clear_dirty_no_op_on_clean_model() -> None:
+    """`_clear_dirty()` on an already-clean model is a no-op (no emit)."""
+    model = WorkspaceModel()
+    received: list[bool] = []
+    model.dirtyChanged.connect(received.append)
+
+    model._clear_dirty()
+
+    assert received == []
+    assert model.is_dirty is False
+
+
+@pytest.mark.unit
+def test_clear_dirty_emits_transition_when_dirty() -> None:
+    """`_clear_dirty()` transitions dirty `True → False` and emits once."""
+    model = WorkspaceModel()
+    model._set_dirty()  # bring the model to dirty
+    received: list[bool] = []
+    model.dirtyChanged.connect(received.append)
+
+    model._clear_dirty()
+
+    assert received == [False]
+    assert model.is_dirty is False
+
+
+@pytest.mark.unit
+def test_clear_dirty_helper_is_idempotent() -> None:
+    """Subsequent `_clear_dirty()` calls after a transition are no-ops."""
+    model = WorkspaceModel()
+    model._set_dirty()
+    received: list[bool] = []
+    model.dirtyChanged.connect(received.append)
+
+    model._clear_dirty()
+    model._clear_dirty()
+    model._clear_dirty()
+
+    assert received == [False]
+    assert model.is_dirty is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("helper_name", "initial_dirty", "expected_emissions", "expected_final_dirty"),
+    [
+        ("_set_dirty", False, [True], True),  # transition: clean → dirty
+        ("_set_dirty", True, [], True),  # idempotent: already dirty
+        ("_clear_dirty", True, [False], False),  # transition: dirty → clean
+        ("_clear_dirty", False, [], False),  # idempotent: already clean
+    ],
+)
+def test_dirty_bit_helpers_symmetric_transition_emit(
+    helper_name: str,
+    initial_dirty: bool,
+    expected_emissions: list[bool],
+    expected_final_dirty: bool,
+) -> None:
+    """`_set_dirty` and `_clear_dirty` are symmetric per ADR-020:
+    transition emits exactly once; same-state call is a no-op.
+
+    The four parametrized cases form a 2x2 grid (helper x initial
+    state) that fully exercises ADR-020 transition-only emission
+    in the non-batch path.
+    """
+    model = WorkspaceModel()
+    model._dirty = initial_dirty
+    received: list[bool] = []
+    model.dirtyChanged.connect(received.append)
+
+    getattr(model, helper_name)()
+
+    assert received == expected_emissions
+    assert model.is_dirty is expected_final_dirty
