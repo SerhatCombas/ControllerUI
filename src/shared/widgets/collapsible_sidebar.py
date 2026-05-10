@@ -1,6 +1,14 @@
 from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 
 class CollapsedSidebarRail(QWidget):
@@ -41,7 +49,9 @@ class CollapsibleSidebar(QFrame):
     expanded_width = 300
     collapsed_width = 44
 
-    def __init__(self, title: str, content: QWidget, side: str = "left", expanded: bool = True) -> None:
+    def __init__(
+        self, title: str, content: QWidget, side: str = "left", expanded: bool = True
+    ) -> None:
         super().__init__()
         self.title = title
         self.side = side
