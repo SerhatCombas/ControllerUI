@@ -1,41 +1,42 @@
-"""Unit tests for `WorkspaceModel` skeleton (S1.3a).
+"""Unit tests for `WorkspaceModel` (S1.3a + S1.3b + S1.3c.1).
 
-Covers:
+Covers (cumulative):
 
-* constructor produces an empty, clean model — no signals emitted
-* `is_dirty` initial state is False per ADR-020 §"Initial state"
-* `components` and `connections` views are read-only `MappingProxyType`
-* `_build_component_instance` mints a fresh `ComponentInstance` with
-  generated `cmp_<ULID>` id, monotonic display id, and matching
-  `created_at` / `modified_at` timestamps; does **not** insert into
-  `_components`
-* consecutive component builds yield distinct ULIDs and monotonic
-  display counters per type slug
-* `_build_connection` mints a fresh `Connection` with generated
-  `con_<ULID>` id and `conn_<n>` display id; does **not** insert into
-  `_connections`
-* builders deep-copy mutable mappings (`parameters`, `metadata`, …)
-  so caller-side mutations do not bleed into the built instance
+* S1.3a — constructor produces an empty, clean model; `is_dirty`
+  initial state is False per ADR-020 §"Initial state"; `components`
+  and `connections` views are read-only `MappingProxyType`; internal
+  builders mint frozen-dataclass instances without inserting into the
+  internal stores.
+* S1.3c.1 — the 12 fine-grained signals from ADR-018 are defined on
+  the model and connectable; `add_component`, `remove_component`, and
+  `move_component` mutate state, emit the correct fine-grained signal,
+  and drive transition-only `dirtyChanged` emission. ε=1e-6 no-op
+  suppression per ADR-020 is enforced on `move_component`. Missing
+  identifiers raise `KeyError`.
 
-Public mutation API, signals, batch mode, and dirty transitions are
-not part of S1.3a and are not tested here. They land in S1.3b through S1.3e.
+Public mutation API for rotation, connections, parameters, and
+property setters lands in S1.3c.2 and is not tested here. Batch mode
+(S1.3d) and `reset()` (S1.3e) are also out of scope.
 
 References
 ----------
 * `decisions/ADR-003-workspace-ui-data-separation.md`
+* `decisions/ADR-005-command-stack-qundostack.md`
 * `decisions/ADR-018-signal-payload-contracts.md`
 * `decisions/ADR-020-dirty-tracking-semantics.md`
-* `specs/02_workspace_requirements.md` §3 (Source of Truth)
+* `specs/02_workspace_requirements.md` §3 (Source of Truth), §4 (Signals),
+  §22 (Move/Delete)
 """
 
 from __future__ import annotations
 
 import re
+import time
 from types import MappingProxyType
 from typing import Any
 
 import pytest
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, QPointF
 
 from features.SystemModelingModule.model.component_instance import (
     ComponentInstance,
@@ -69,7 +70,7 @@ def _build_kwargs(**overrides: Any) -> dict[str, Any]:
 
     Tests pass overrides to vary one field at a time without
     repeating the full argument set. The defaults describe a generic
-    resistor at the origin.
+    resistor at the origin (tuple position, internal builder form).
     """
     base: dict[str, Any] = {
         "definition_id": "electrical.analog.components.resistor",
@@ -85,8 +86,30 @@ def _build_kwargs(**overrides: Any) -> dict[str, Any]:
     return base
 
 
+def _add_kwargs(**overrides: Any) -> dict[str, Any]:
+    """Return a default `add_component` kwargs payload.
+
+    Differs from `_build_kwargs` by using `QPointF` for `position`,
+    matching the public mutation API (the internal builder takes a
+    tuple; the public method takes `QPointF` per ADR-018 signal
+    payload alignment).
+    """
+    base: dict[str, Any] = {
+        "definition_id": "electrical.analog.components.resistor",
+        "type": "Resistor",
+        "display_name": "Resistor",
+        "domain": "electrical_analog",
+        "category": "component",
+        "position": QPointF(100.0, 200.0),
+        "visual": VisualSpec(svg_id="resistor_default"),
+        "physical_attributes": PhysicalAttributes(),
+    }
+    base.update(overrides)
+    return base
+
+
 # ---------------------------------------------------------------------- #
-# Constructor and views
+# Constructor and views (S1.3a)
 # ---------------------------------------------------------------------- #
 
 
@@ -126,7 +149,7 @@ def test_connections_view_is_mapping_proxy() -> None:
 
 
 # ---------------------------------------------------------------------- #
-# `_build_component_instance`
+# `_build_component_instance` (S1.3a)
 # ---------------------------------------------------------------------- #
 
 
@@ -211,7 +234,7 @@ def test_component_builder_copies_mutable_mappings() -> None:
 
 
 # ---------------------------------------------------------------------- #
-# `_build_connection`
+# `_build_connection` (S1.3a)
 # ---------------------------------------------------------------------- #
 
 
@@ -287,3 +310,280 @@ def test_connection_builder_copies_mutable_mappings() -> None:
 
     assert conn.style == {"color_override": "#ff0000"}
     assert conn.metadata == {"comment": "trunk"}
+
+
+# ---------------------------------------------------------------------- #
+# Signal definitions (S1.3c.1)
+# ---------------------------------------------------------------------- #
+
+
+_EXPECTED_SIGNALS: tuple[str, ...] = (
+    "componentAdded",
+    "componentRemoved",
+    "componentChanged",
+    "componentMoved",
+    "componentRotated",
+    "connectionAdded",
+    "connectionRemoved",
+    "connectionChanged",
+    "selectionChanged",
+    "validationChanged",
+    "modelReset",
+    "dirtyChanged",
+)
+
+
+@pytest.mark.unit
+def test_workspace_model_defines_all_12_fine_grained_signals() -> None:
+    """ADR-018 §"Signal payload type table" lists 12 fine-grained signals;
+    the model exposes each one as a connectable, emittable Qt signal."""
+    model = WorkspaceModel()
+
+    for name in _EXPECTED_SIGNALS:
+        signal = getattr(model, name, None)
+        assert signal is not None, f"missing signal: {name}"
+        assert hasattr(signal, "emit"), f"{name} is not an emittable signal"
+        assert hasattr(signal, "connect"), f"{name} is not connectable"
+
+
+# ---------------------------------------------------------------------- #
+# `add_component` (S1.3c.1)
+# ---------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_add_component_inserts_and_returns_id() -> None:
+    """`add_component` returns the new `cmp_<ULID>` and inserts the instance."""
+    model = WorkspaceModel()
+
+    new_id = model.add_component(**_add_kwargs())
+
+    assert isinstance(new_id, str)
+    assert new_id.startswith("cmp_")
+    assert _ULID_BODY_RE.match(new_id.removeprefix("cmp_"))
+    assert new_id in model.components
+    assert model.components[new_id].position == (100.0, 200.0)
+
+
+@pytest.mark.unit
+def test_add_component_emits_component_added_signal() -> None:
+    """`componentAdded` fires with the new component_id."""
+    model = WorkspaceModel()
+    received: list[str] = []
+    model.componentAdded.connect(received.append)
+
+    new_id = model.add_component(**_add_kwargs())
+
+    assert received == [new_id]
+
+
+@pytest.mark.unit
+def test_add_component_transitions_dirty_on_first_call() -> None:
+    """First meaningful edit transitions dirty `False → True` and emits."""
+    model = WorkspaceModel()
+    dirty_emissions: list[bool] = []
+    model.dirtyChanged.connect(dirty_emissions.append)
+
+    assert model.is_dirty is False
+    model.add_component(**_add_kwargs())
+
+    assert model.is_dirty is True
+    assert dirty_emissions == [True]
+
+
+@pytest.mark.unit
+def test_add_component_does_not_re_emit_dirty_when_already_dirty() -> None:
+    """ADR-020 transition-only emission: subsequent edits do not re-emit."""
+    model = WorkspaceModel()
+    dirty_emissions: list[bool] = []
+    model.dirtyChanged.connect(dirty_emissions.append)
+
+    model.add_component(**_add_kwargs())
+    model.add_component(**_add_kwargs())
+    model.add_component(**_add_kwargs())
+
+    assert dirty_emissions == [True]
+
+
+# ---------------------------------------------------------------------- #
+# `remove_component` (S1.3c.1)
+# ---------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_remove_component_deletes_from_components() -> None:
+    """`remove_component` removes the entry from the internal store."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs())
+    assert new_id in model.components
+
+    model.remove_component(new_id)
+
+    assert new_id not in model.components
+
+
+@pytest.mark.unit
+def test_remove_component_emits_component_removed_signal() -> None:
+    """`componentRemoved` fires with the removed component_id."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs())
+    received: list[str] = []
+    model.componentRemoved.connect(received.append)
+
+    model.remove_component(new_id)
+
+    assert received == [new_id]
+
+
+@pytest.mark.unit
+def test_remove_component_raises_keyerror_for_unknown_id() -> None:
+    """Unknown component_id raises a plain `KeyError` carrying the id."""
+    model = WorkspaceModel()
+
+    with pytest.raises(KeyError) as exc_info:
+        model.remove_component("cmp_nonexistent")
+
+    assert "cmp_nonexistent" in str(exc_info.value)
+
+
+@pytest.mark.unit
+def test_remove_component_does_not_cascade_to_attached_connections() -> None:
+    """Raw `remove_component` is low-level; cascade is the compound
+    command's responsibility per ADR-005 (S1.7)."""
+    model = WorkspaceModel()
+    a = model.add_component(**_add_kwargs())
+    b = model.add_component(**_add_kwargs())
+    # Connect a→b directly via the internal builder + dict; the public
+    # `add_connection` API is S1.3c.2 and intentionally not used here.
+    conn = model._build_connection(
+        source=PortRef(component_id=a, port_id="p"),
+        target=PortRef(component_id=b, port_id="p"),
+    )
+    model._connections[conn.id] = conn
+
+    model.remove_component(a)
+
+    # Connection is dangling on `a` but still present in the store —
+    # cascade is the compound command's job, not the raw mutation's.
+    assert conn.id in model.connections
+
+
+# ---------------------------------------------------------------------- #
+# `move_component` (S1.3c.1)
+# ---------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_move_component_updates_position() -> None:
+    """`move_component` writes the new position into the instance."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(position=QPointF(0.0, 0.0)))
+
+    model.move_component(new_id, QPointF(50.0, 75.0))
+
+    assert model.components[new_id].position == (50.0, 75.0)
+
+
+@pytest.mark.unit
+def test_move_component_emits_signal_with_qpointf_payload() -> None:
+    """`componentMoved` payload is `(str, QPointF, QPointF)` per ADR-018."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(position=QPointF(0.0, 0.0)))
+    received: list[tuple[str, QPointF, QPointF]] = []
+    model.componentMoved.connect(lambda *args: received.append(args))
+
+    model.move_component(new_id, QPointF(50.0, 75.0))
+
+    assert len(received) == 1
+    cid, old, new = received[0]
+    assert cid == new_id
+    assert isinstance(old, QPointF)
+    assert isinstance(new, QPointF)
+    assert (old.x(), old.y()) == (0.0, 0.0)
+    assert (new.x(), new.y()) == (50.0, 75.0)
+
+
+@pytest.mark.unit
+def test_move_component_no_op_for_same_position() -> None:
+    """Moving to the current position is a no-op: no signal."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(position=QPointF(100.0, 200.0)))
+    received_moves: list[Any] = []
+    model.componentMoved.connect(lambda *args: received_moves.append(args))
+
+    model.move_component(new_id, QPointF(100.0, 200.0))
+
+    assert received_moves == []
+
+
+@pytest.mark.unit
+def test_move_component_no_op_for_sub_epsilon_difference() -> None:
+    """Sub-ε position drift is suppressed (drag-snap drift case from ADR-020)."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(position=QPointF(100.0, 200.0)))
+    received_moves: list[Any] = []
+    model.componentMoved.connect(lambda *args: received_moves.append(args))
+
+    model.move_component(new_id, QPointF(100.0 + 5e-7, 200.0 + 5e-7))
+
+    assert received_moves == []
+    # Position is unchanged because the call short-circuited.
+    assert model.components[new_id].position == (100.0, 200.0)
+
+
+@pytest.mark.unit
+def test_move_component_raises_keyerror_for_unknown_id() -> None:
+    """Unknown component_id raises a plain `KeyError` carrying the id."""
+    model = WorkspaceModel()
+
+    with pytest.raises(KeyError) as exc_info:
+        model.move_component("cmp_nonexistent", QPointF(0.0, 0.0))
+
+    assert "cmp_nonexistent" in str(exc_info.value)
+
+
+@pytest.mark.unit
+def test_move_component_updates_modified_at_timestamp() -> None:
+    """A real move bumps `modified_at`."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs())
+    initial_modified = model.components[new_id].modified_at
+    # Sleep ensures the microsecond timestamp will differ.
+    time.sleep(0.001)
+
+    model.move_component(new_id, QPointF(999.0, 999.0))
+
+    assert model.components[new_id].modified_at != initial_modified
+
+
+@pytest.mark.unit
+def test_move_component_no_op_does_not_update_modified_at() -> None:
+    """A no-op move leaves `modified_at` unchanged (no phantom edits)."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(position=QPointF(50.0, 50.0)))
+    initial_modified = model.components[new_id].modified_at
+    time.sleep(0.001)
+
+    model.move_component(new_id, QPointF(50.0, 50.0))
+
+    assert model.components[new_id].modified_at == initial_modified
+
+
+# ---------------------------------------------------------------------- #
+# Dirty-bit helper (S1.3c.1)
+# ---------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_set_dirty_helper_is_idempotent() -> None:
+    """`_set_dirty()` only emits on transition; further calls are no-ops."""
+    model = WorkspaceModel()
+    received: list[bool] = []
+    model.dirtyChanged.connect(received.append)
+
+    model._set_dirty()
+    model._set_dirty()
+    model._set_dirty()
+
+    assert received == [True]
+    assert model.is_dirty is True
