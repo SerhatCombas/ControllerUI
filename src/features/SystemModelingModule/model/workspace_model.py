@@ -460,11 +460,23 @@ class WorkspaceModel(QObject):
         change_set = builder.build()
         if change_set.is_empty():
             return
+        # NOTE: Under PySide6's default signal dispatch, subscriber
+        # exceptions raised in `modelChanged` slots are caught by the
+        # Qt event loop and routed to `sys.excepthook` rather than
+        # propagating back here. This `try/except` is structurally
+        # retained per ADR-019 §"Subscriber exceptions during
+        # emission" (truth table cases 2 and 4) but is runtime-
+        # inactive in Phase 1: the `except` branch never fires
+        # because the subscriber exception is intercepted upstream
+        # by Qt. See
+        # `decisions/2026-05-10_pyside6-signal-exception-dispatch.md`
+        # for the finding and candidate resolution paths.
         try:
             self.modelChanged.emit(change_set)
         except Exception:
             if exc_val is not None:
-                # Case 4: a caller exception is propagating; do not
+                # Case 4 (defensive; runtime-inactive per the NOTE
+                # above): a caller exception is propagating; do not
                 # mask it. Log the subscriber exception and let the
                 # caller exception flow.
                 logger.exception(
@@ -472,8 +484,8 @@ class WorkspaceModel(QObject):
                     "emission; original mutation exception preserved"
                 )
             else:
-                # Case 2: no caller exception; let the subscriber
-                # exception propagate.
+                # Case 2 (defensive; runtime-inactive): no caller
+                # exception; let the subscriber exception propagate.
                 raise
 
     # ------------------------------------------------------------------ #
