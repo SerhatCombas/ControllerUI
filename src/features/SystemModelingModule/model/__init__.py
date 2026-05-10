@@ -48,6 +48,7 @@ from .validation_report import (
     ValidationReport,
     ValidationSeverity,
 )
+from .workspace_change_set import WorkspaceChangeSet
 from .workspace_model import WorkspaceModel
 
 __all__ = [
@@ -68,6 +69,7 @@ __all__ = [
     "ValidationSeverity",
     "VisualSpec",
     "Waypoint",
+    "WorkspaceChangeSet",
     "WorkspaceIdGenerator",
     "WorkspaceModel",
 ]

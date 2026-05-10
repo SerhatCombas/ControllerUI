@@ -3,9 +3,8 @@
 The single source of truth for placed components, connections, and the
 dirty flag. UI subscribes to its signals; widgets never store canonical
 data per ADR-003. Per ADR-018 / ADR-019 / ADR-020 the model emits 13
-signals total once S1.3 is complete: 12 fine-grained signals for
-individual mutations and one coarse-grained `modelChanged` signal for
-batch operations (added in S1.3d).
+signals total: 12 fine-grained signals for individual mutations and
+one coarse-grained `modelChanged` signal for batch operations.
 
 This file is part of the data layer. It must not import any Qt UI
 classes. Importing `QObject`, `QPointF`, and `Signal` from
@@ -21,38 +20,37 @@ Phase 1 build order within S1.3:
 * S1.3c.1: 12 fine-grained signals (ADR-018) + `add_component` /
   `remove_component` / `move_component` mutation methods +
   transition-only `_set_dirty()` helper.
-* S1.3c.2a: `ComponentInstance.rotation` schema fix (`int → float`
-  per ADR-018), shared `_canonical_rotation` helper, rotation
-  validation on `add_component`, and the `rotate_component` mutation
-  method.
-* S1.3c.2b (this commit): five component property setters
-  (`set_parameter`, `set_custom_label`, `set_locked`, `set_tags`,
-  `set_annotations`) and three connection mutations (`add_connection`,
-  `remove_connection`, `update_connection`). Per `02 §11.4 Field
-  Mutability Matrix`, `metadata` and `extensions` have no public
-  setter in Phase 1 (forward-compatibility containers, write path
-  via `_build_*` and `from_dict` only).
-* S1.3d: `batch()` context manager + `WorkspaceChangeSet` + 13th
-  signal `modelChanged`.
-* S1.3e: `reset()` + `modelReset()` signal + `_clear_dirty()`.
+* S1.3c.2a: `ComponentInstance.rotation` schema fix (`int → float`),
+  `_canonical_rotation` helper, `rotate_component`.
+* S1.3c.2b: five component property setters and three connection
+  mutations.
+* S1.3d (this commit): `batch()` context manager + 13th signal
+  `modelChanged(WorkspaceChangeSet)` per ADR-019 + minimal `reset()`
+  with batch interaction. Mutation methods become batch-aware:
+  inside a batch, individual fine-grained signals are suppressed and
+  the change is recorded into a `_ChangeSetBuilder`; on outermost
+  exit, exactly one `modelChanged(change_set)` is emitted (provided
+  the change_set is not empty).
+* S1.3e: extended `reset()` semantics + `_clear_dirty()` + dirty-
+  clear-on-reset edge cases.
 
 Validation order in mutation methods (consistent across S1.3c.x):
 
-1. Argument validation / canonicalization (e.g., `_canonical_rotation`,
-   `str.strip()`) — raises early on bad inputs, leaves model state
-   untouched.
-2. Existence check (e.g., `component_id` in `_components`) — raises
-   `KeyError` if the target is missing.
-3. No-op suppression via ε-tolerance helpers or exact `==` — returns
-   silently if the call would not change state.
-4. Mutation + `_set_dirty()` + signal emission. `modified_at` is
-   bumped on real mutations only; no-ops do NOT bump it (see ADR-020
-   §"No-op suppression").
+1. Argument validation / canonicalization.
+2. Existence check (`KeyError` if the target is missing).
+3. No-op suppression.
+4. Mutation + `_set_dirty()` + signal emission (or batch-builder
+   record).
 
-A call with both an invalid argument and a missing id raises the
-argument error first (step 1), not the missing-id error (step 2).
-This reflects the principle that argument validation precedes
-resource lookup.
+Validation order in batch context exit (per ADR-019):
+
+1. Build the cumulative `WorkspaceChangeSet` from the builder.
+2. If empty, suppress emission and return.
+3. Otherwise emit `modelChanged(change_set)`. Subscriber exceptions
+   during emission MUST NOT mask a caller exception that triggered
+   the exit (Mode B + masking guard per ADR-019 §"Subscriber
+   exceptions during emission"); they are logged and the caller
+   exception propagates.
 
 References:
 ----------
@@ -69,9 +67,10 @@ References:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from datetime import UTC, datetime
-from types import MappingProxyType
+from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, Any, Final
 
 from PySide6.QtCore import QObject, QPointF, Signal
@@ -90,9 +89,13 @@ from .equality import approx_equal_float, approx_equal_qpointf
 from .id_generator import WorkspaceIdGenerator
 from .selection_model import SelectionSnapshot
 from .validation_report import ValidationReport
+from .workspace_change_set import WorkspaceChangeSet
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+
+logger = logging.getLogger(__name__)
 
 
 # Phase-1 rotation quantization per `02 §22`/`§23`. ADR-018 keeps the
@@ -100,6 +103,192 @@ if TYPE_CHECKING:
 # later admits free or non-orthogonal rotation; the quantization rule
 # is enforced at the mutation API layer via `_canonical_rotation`.
 _VALID_ROTATIONS: Final[tuple[float, ...]] = (0.0, 90.0, 180.0, 270.0)
+
+
+class _ChangeSetBuilder:
+    """Internal accumulator for a batch's `WorkspaceChangeSet`.
+
+    Implements the diff-aggregation rules from ADR-019 §"Diff
+    aggregation rules": tuples carry net-effect IDs in insertion
+    order of first appearance, intermediate add+remove pairs cancel,
+    and edits to a removed component are dropped.
+
+    The `signal_reset()` method handles `model.reset()` inside a
+    batch: it clears all queued state and sets `reset_required`,
+    after which subsequent record calls become no-ops (post-reset
+    mutations apply to the model but are not individually reflected
+    in the change_set per ADR-019 §"Reset semantics inside a batch").
+    """
+
+    def __init__(self) -> None:
+        # Internal lists preserve insertion order of first appearance.
+        self._added_components: list[str] = []
+        self._removed_components: list[str] = []
+        self._changed_components: list[str] = []
+        self._added_connections: list[str] = []
+        self._removed_connections: list[str] = []
+        self._changed_connections: list[str] = []
+        self._validation_changed: bool = False
+        self._dirty_changed: bool = False
+        self._reset_required: bool = False
+
+    # ------------------------------------------------------------------ #
+    # Component records
+    # ------------------------------------------------------------------ #
+
+    def record_component_added(self, cid: str) -> None:
+        """Record a component addition; respects reset suppression."""
+        if self._reset_required:
+            return
+        if cid not in self._added_components:
+            self._added_components.append(cid)
+
+    def record_component_removed(self, cid: str) -> None:
+        """Record a component removal with add/change cancellation."""
+        if self._reset_required:
+            return
+        if cid in self._added_components:
+            # add + remove within batch → net zero
+            self._added_components.remove(cid)
+            while cid in self._changed_components:
+                self._changed_components.remove(cid)
+            return
+        # was pre-batch existing
+        if cid not in self._removed_components:
+            self._removed_components.append(cid)
+        # change is moot once removed
+        while cid in self._changed_components:
+            self._changed_components.remove(cid)
+
+    def record_component_changed(self, cid: str) -> None:
+        """Record a component edit; suppressed if `cid` was added in batch."""
+        if self._reset_required:
+            return
+        if cid in self._added_components:
+            return  # added + changed → added only
+        if cid in self._removed_components:
+            return  # changed + removed unreachable in normal flow
+        if cid not in self._changed_components:
+            self._changed_components.append(cid)
+
+    # ------------------------------------------------------------------ #
+    # Connection records
+    # ------------------------------------------------------------------ #
+
+    def record_connection_added(self, conn_id: str) -> None:
+        """Record a connection addition; respects reset suppression."""
+        if self._reset_required:
+            return
+        if conn_id not in self._added_connections:
+            self._added_connections.append(conn_id)
+
+    def record_connection_removed(self, conn_id: str) -> None:
+        """Record a connection removal with add/change cancellation."""
+        if self._reset_required:
+            return
+        if conn_id in self._added_connections:
+            self._added_connections.remove(conn_id)
+            while conn_id in self._changed_connections:
+                self._changed_connections.remove(conn_id)
+            return
+        if conn_id not in self._removed_connections:
+            self._removed_connections.append(conn_id)
+        while conn_id in self._changed_connections:
+            self._changed_connections.remove(conn_id)
+
+    def record_connection_changed(self, conn_id: str) -> None:
+        """Record a connection edit; suppressed if added in batch."""
+        if self._reset_required:
+            return
+        if conn_id in self._added_connections:
+            return
+        if conn_id in self._removed_connections:
+            return
+        if conn_id not in self._changed_connections:
+            self._changed_connections.append(conn_id)
+
+    # ------------------------------------------------------------------ #
+    # Aggregate flags
+    # ------------------------------------------------------------------ #
+
+    def mark_dirty_changed(self) -> None:
+        """Mark that the dirty bit transitioned during the batch."""
+        if self._reset_required:
+            return
+        self._dirty_changed = True
+
+    def mark_validation_changed(self) -> None:
+        """Mark that the validation report changed during the batch.
+
+        Currently unused (validation deferral lands in S1.6); kept
+        for API stability so that the validator can call it without
+        needing further changes here.
+        """
+        if self._reset_required:
+            return
+        self._validation_changed = True
+
+    def signal_reset(self) -> None:
+        """Handle `model.reset()` called inside the batch.
+
+        Clears all queued state and sets `reset_required`. After this
+        call, all `record_*` and `mark_*` methods become no-ops (per
+        ADR-019 §"Reset semantics inside a batch").
+        """
+        self._added_components.clear()
+        self._removed_components.clear()
+        self._changed_components.clear()
+        self._added_connections.clear()
+        self._removed_connections.clear()
+        self._changed_connections.clear()
+        self._validation_changed = False
+        self._dirty_changed = False
+        self._reset_required = True
+
+    def build(self) -> WorkspaceChangeSet:
+        """Snapshot the current state into a frozen `WorkspaceChangeSet`."""
+        return WorkspaceChangeSet(
+            added_components=tuple(self._added_components),
+            removed_components=tuple(self._removed_components),
+            changed_components=tuple(self._changed_components),
+            added_connections=tuple(self._added_connections),
+            removed_connections=tuple(self._removed_connections),
+            changed_connections=tuple(self._changed_connections),
+            validation_changed=self._validation_changed,
+            dirty_changed=self._dirty_changed,
+            reset_required=self._reset_required,
+        )
+
+
+class _Batch:
+    """Context manager helper returned by `WorkspaceModel.batch()`.
+
+    Per ADR-019, the model itself implements the batch semantics; this
+    class only forwards `__enter__` / `__exit__` to model methods. The
+    `__exit__` skeleton implements the subscriber-exception-masking
+    guard (Mode B per ADR-019).
+    """
+
+    __slots__ = ("_model",)
+
+    def __init__(self, model: WorkspaceModel) -> None:
+        self._model = model
+
+    def __enter__(self) -> None:
+        self._model._batch_enter()
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        # The model's `_batch_exit` may raise (subscriber exception
+        # without a caller exception, case 2 of the ADR-019 truth
+        # table). It will not mask `exc_val` (case 4) because of the
+        # logging guard inside.
+        self._model._batch_exit(exc_val)
+        # Returning None / False propagates `exc_val` if any.
 
 
 class WorkspaceModel(QObject):
@@ -110,7 +299,7 @@ class WorkspaceModel(QObject):
     owns truth and the UI is a pure consumer; per ADR-005 user edits
     enter through `QUndoCommand` subclasses (S1.7 work) that call
     public mutation methods on this model. Per ADR-018 / ADR-019 /
-    ADR-020 the model emits 13 signals total once S1.3 is complete.
+    ADR-020 the model emits 13 signals total.
 
     Mutation API status:
 
@@ -119,18 +308,19 @@ class WorkspaceModel(QObject):
       transition-only `_set_dirty()` helper.
     * S1.3c.2a: `rotate_component` plus rotation validation /
       canonicalization on `add_component`.
-    * S1.3c.2b (current): `set_parameter`, `set_custom_label`,
-      `set_locked`, `set_tags`, `set_annotations` for component
-      property edits; `add_connection`, `remove_connection`,
-      `update_connection` for connection lifecycle and content edits.
-      Per `02 §11.4`, `metadata` and `extensions` have no public
-      setter in Phase 1.
-    * S1.3d (later): `batch()` context manager and `modelChanged`.
-    * S1.3e (last): `reset()` and `_clear_dirty()`.
+    * S1.3c.2b: `set_parameter`, `set_custom_label`, `set_locked`,
+      `set_tags`, `set_annotations`, `add_connection`,
+      `remove_connection`, `update_connection`.
+    * S1.3d (current): `batch()` context manager + `modelChanged`
+      signal + minimal `reset()`. Mutation methods are batch-aware:
+      inside a batch, individual fine-grained signals are suppressed
+      and changes are accumulated into a `_ChangeSetBuilder`; on
+      outermost exit, exactly one `modelChanged(change_set)` is
+      emitted (suppressed if the change_set is empty).
+    * S1.3e: extended `reset()` semantics + `_clear_dirty()`.
 
     Attributes:
-        is_dirty: Read-only dirty flag per ADR-020. Cleared by
-            `reset()` (S1.3e), save (S2), and undo-to-clean (S1.7).
+        is_dirty: Read-only dirty flag per ADR-020.
         components: Read-only mapping of `cmp_<ULID>` →
             `ComponentInstance`.
         connections: Read-only mapping of `con_<ULID>` → `Connection`.
@@ -148,6 +338,7 @@ class WorkspaceModel(QObject):
         validationChanged(report: ValidationReport)
         modelReset()
         dirtyChanged(is_dirty: bool)
+        modelChanged(change_set: WorkspaceChangeSet)  # ADR-019, batch only
 
     See Also:
         `02 §3`, `02 §4`, `02 §11.4`, ADR-003, ADR-018, ADR-019,
@@ -155,16 +346,7 @@ class WorkspaceModel(QObject):
     """
 
     # ------------------------------------------------------------------ #
-    # Fine-grained signals (ADR-018 §"Signal payload type table")
-    #
-    # Payload types follow the delta-vs-id-only design principle:
-    #
-    # * delta-bearing where the field set is small and fixed (move,
-    #   rotate); subscribers can avoid a refetch and command-merging
-    #   (ADR-005) inspects old/new without touching the model.
-    # * id-only for `*Added`, `*Removed`, `*Changed` where the field
-    #   set is wide or dynamic; subscribers refetch the model under
-    #   the synchronous-emission guarantee.
+    # Fine-grained signals (ADR-018)
     # ------------------------------------------------------------------ #
     componentAdded = Signal(str)
     componentRemoved = Signal(str)
@@ -179,23 +361,25 @@ class WorkspaceModel(QObject):
     modelReset = Signal()
     dirtyChanged = Signal(bool)
 
+    # ------------------------------------------------------------------ #
+    # Coarse-grained batch signal (ADR-019)
+    # ------------------------------------------------------------------ #
+    # Mutually exclusive with the 12 fine-grained signals: outside a
+    # batch the fine-grained signals fire; inside a batch they are
+    # suppressed and `modelChanged` fires once on outermost exit.
+    modelChanged = Signal(WorkspaceChangeSet)
+
     def __init__(self, parent: QObject | None = None) -> None:
-        """Initialize an empty, clean workspace model.
-
-        A freshly constructed model is clean (`is_dirty=False`) per
-        ADR-020 §"Initial state". `dirtyChanged` is not emitted at
-        construction time; subscribers read the initial state via the
-        `is_dirty` property after wiring.
-
-        Args:
-            parent: Optional Qt parent; usually `None`. Provided for
-                consistency with other `QObject` subclasses.
-        """
+        """Initialize an empty, clean workspace model."""
         super().__init__(parent)
         self._components: dict[str, ComponentInstance] = {}
         self._connections: dict[str, Connection] = {}
         self._dirty: bool = False
         self._id_generator: WorkspaceIdGenerator = WorkspaceIdGenerator()
+        # Batch state: depth counter for nested batches, builder
+        # accumulating diff content for the outermost batch only.
+        self._batch_depth: int = 0
+        self._batch_builder: _ChangeSetBuilder | None = None
 
     # ------------------------------------------------------------------ #
     # Read-only views
@@ -203,31 +387,137 @@ class WorkspaceModel(QObject):
 
     @property
     def is_dirty(self) -> bool:
-        """Current dirty bit per ADR-020.
-
-        A newly constructed model is clean; the first meaningful edit
-        transitions to True via `_set_dirty()`. `reset()` (S1.3e) and
-        save (S2) transition back to False via `_clear_dirty()`.
-        """
+        """Current dirty bit per ADR-020."""
         return self._dirty
 
     @property
     def components(self) -> Mapping[str, ComponentInstance]:
-        """Read-only mapping of `component_id` → `ComponentInstance`.
-
-        Returned as a `MappingProxyType` so callers cannot mutate the
-        underlying dict. Mutations go through the public mutation API,
-        which is the only sanctioned write path per ADR-003.
-        """
+        """Read-only mapping of `component_id` → `ComponentInstance`."""
         return MappingProxyType(self._components)
 
     @property
     def connections(self) -> Mapping[str, Connection]:
-        """Read-only mapping of `connection_id` → `Connection`.
-
-        Same immutability contract as `components`.
-        """
+        """Read-only mapping of `connection_id` → `Connection`."""
         return MappingProxyType(self._connections)
+
+    # ------------------------------------------------------------------ #
+    # Batch context manager (ADR-019)
+    # ------------------------------------------------------------------ #
+
+    def batch(self) -> _Batch:
+        """Return a context manager that coalesces signals over a batch.
+
+        Inside the resulting `with` block, the 12 fine-grained signals
+        are suppressed and per-mutation `dirtyChanged` emissions are
+        deferred. On the outermost exit, the model emits exactly one
+        `modelChanged(change_set: WorkspaceChangeSet)` carrying the
+        cumulative diff (provided the change_set is not empty per
+        `WorkspaceChangeSet.is_empty`).
+
+        Nested calls increment a depth counter; only the outermost
+        exit emits. Mode B exception handling: completed mutations
+        remain in the model and are reflected in the change_set;
+        the exception still propagates after emission.
+
+        Subscriber exceptions during `modelChanged` emission MUST NOT
+        mask a caller exception that triggered the exit. The
+        `_batch_exit` implementation logs subscriber exceptions when
+        a caller exception is present and otherwise re-raises.
+
+        See ADR-019 for the full contract.
+        """
+        return _Batch(self)
+
+    def _batch_enter(self) -> None:
+        """Open a batch; allocate the builder on the outermost open."""
+        self._batch_depth += 1
+        if self._batch_depth == 1:
+            self._batch_builder = _ChangeSetBuilder()
+
+    def _batch_exit(self, exc_val: BaseException | None) -> None:
+        """Close a batch; on outermost close, emit `modelChanged`.
+
+        Per ADR-019 §"Subscriber exceptions during emission":
+
+        * If `exc_val is not None` and a subscriber raises, the
+          subscriber exception is logged and the caller exception
+          (`exc_val`) is allowed to propagate (case 4 of the truth
+          table).
+        * If `exc_val is None` and a subscriber raises, the
+          subscriber exception propagates (case 2).
+        * Otherwise (cases 1 and 3) the caller exception (or none)
+          propagates normally.
+        """
+        self._batch_depth -= 1
+        if self._batch_depth != 0:
+            return  # nested exit: no-op until outermost
+        builder = self._batch_builder
+        # Clear builder reference before emitting so subscribers that
+        # introspect the model see "not in a batch" while reacting.
+        self._batch_builder = None
+        if builder is None:
+            return  # defensive: shouldn't happen given matched enter/exit
+        change_set = builder.build()
+        if change_set.is_empty():
+            return
+        try:
+            self.modelChanged.emit(change_set)
+        except Exception:
+            if exc_val is not None:
+                # Case 4: a caller exception is propagating; do not
+                # mask it. Log the subscriber exception and let the
+                # caller exception flow.
+                logger.exception(
+                    "subscriber raised during batched modelChanged "
+                    "emission; original mutation exception preserved"
+                )
+            else:
+                # Case 2: no caller exception; let the subscriber
+                # exception propagate.
+                raise
+
+    # ------------------------------------------------------------------ #
+    # Reset (S1.3d minimal; full semantics in S1.3e)
+    # ------------------------------------------------------------------ #
+
+    def reset(self) -> None:
+        """Reset the workspace to an empty, clean state.
+
+        Clears components, connections, the dirty flag, and the ID
+        generator. Outside a batch, emits `modelReset()` and (if the
+        model was dirty) `dirtyChanged(False)` per ADR-020 transition
+        rule.
+
+        Inside a batch, per ADR-019 §"Reset semantics inside a
+        batch": all queued mutations are discarded from the
+        change_set, `change_set.reset_required = True`, and post-
+        reset mutations apply to the model normally but are NOT
+        individually reflected in the change_set. The fine-grained
+        `modelReset` signal is NOT emitted inside a batch — the
+        single `modelChanged(change_set)` with `reset_required=True`
+        on outermost exit is the canonical notification.
+
+        S1.3e will extend this with `_clear_dirty()` and edge-case
+        coverage; the S1.3d implementation is minimal but compatible
+        with the batch interaction described above.
+        """
+        was_dirty = self._dirty
+        self._components.clear()
+        self._connections.clear()
+        self._id_generator = WorkspaceIdGenerator()
+        self._dirty = False
+
+        if self._batch_builder is not None:
+            # Inside a batch: nuke queued state and mark reset_required.
+            # Do NOT emit individual signals; outermost batch exit will
+            # carry the reset notification.
+            self._batch_builder.signal_reset()
+            return
+
+        # Outside a batch: emit transitions per ADR-020.
+        if was_dirty:
+            self.dirtyChanged.emit(False)
+        self.modelReset.emit()
 
     # ------------------------------------------------------------------ #
     # Public mutation API — components
@@ -253,62 +543,15 @@ class WorkspaceModel(QObject):
         metadata: Mapping[str, Any] | None = None,
         extensions: Mapping[str, Any] | None = None,
     ) -> str:
-        """Add a new component to the workspace and return its `id`.
+        """Add a new component and return its id.
 
-        Mints a fresh `ComponentInstance` via
-        `_build_component_instance`, inserts it into `_components`,
-        transitions dirty if needed, and emits
-        `componentAdded(component_id)`.
-
-        `position` is taken as a `QPointF` to match the signal contract
-        (ADR-018) and stored internally as a `tuple[float, float]` to
-        match `ComponentInstance.position`.
-
-        `rotation` is validated and canonicalized via
-        `_canonical_rotation` before any mutation. Sub-ε drift around
-        the Phase-1 valid angles is snapped to the canonical value.
-        Invalid values raise `ValueError` and the model state remains
-        unchanged.
-
-        `metadata` and `extensions` parameters here populate the new
-        instance only; per `02 §11.4` they have no public *setter* in
-        Phase 1 and cannot be mutated after creation through
-        `WorkspaceModel`.
-
-        Args:
-            definition_id: Dotted identifier of the source component
-                definition.
-            type: Definition type label.
-            display_name: Human-readable definition name.
-            domain: Physical domain identifier.
-            category: Library category from the definition.
-            position: Scene-coordinate point as `QPointF`.
-            visual: SVG variant selector.
-            physical_attributes: Declared physical-attribute flags.
-            custom_label: Optional user-editable label.
-            rotation: Initial rotation in degrees. Must be (within ε)
-                one of `{0.0, 90.0, 180.0, 270.0}` per `02 §22`/`§23`;
-                snapped to the canonical value before storage.
-                Defaults to 0.0.
-            parameters: Optional parameter mapping. Copied.
-            locked: Initial locked state.
-            tags: Tuple of free-form tags.
-            annotations: Optional annotations mapping. Copied.
-            metadata: Optional metadata mapping. Copied. Internal
-                container per `02 §11.4`; no public setter.
-            extensions: Optional extensions mapping. Copied. Internal
-                container per `02 §11.4`; no public setter.
-
-        Returns:
-            Internal `component_id` (`cmp_<ULID>`) of the new component.
-
-        Raises:
-            ValueError: If `rotation` is not (within ε) a Phase-1
-                quantization angle.
+        See S1.3c.1 / S1.3c.2a for the full contract; S1.3d adds
+        batch awareness (the `componentAdded` signal is suppressed
+        inside a batch and the addition is recorded into the
+        change_set instead).
         """
         # TODO(S1.B): Replace explicit kwargs with ComponentDefinition
-        # lookup once ComponentRegistry is implemented. See `specs/07`
-        # §16 and the S1.B grouping in `specs/07` §7.
+        # lookup once ComponentRegistry is implemented.
         canonical_rotation = _canonical_rotation(rotation)
         instance = self._build_component_instance(
             definition_id=definition_id,
@@ -330,50 +573,25 @@ class WorkspaceModel(QObject):
         )
         self._components[instance.id] = instance
         self._set_dirty()
-        self.componentAdded.emit(instance.id)
+        if self._batch_builder is not None:
+            self._batch_builder.record_component_added(instance.id)
+        else:
+            self.componentAdded.emit(instance.id)
         return instance.id
 
     def remove_component(self, component_id: str) -> None:
-        """Remove a component from the workspace.
-
-        Note: this is a low-level mutation. It does **not** remove
-        connections attached to the component's ports. Atomic delete
-        with attached connections is the responsibility of the
-        compound `DeleteComponentCommand` (S1.7) per ADR-005, typically
-        wrapped in `model.batch()` (ADR-019).
-
-        Args:
-            component_id: Internal `cmp_<ULID>` identifier.
-
-        Raises:
-            KeyError: If `component_id` is not present in the
-                workspace.
-        """
+        """Remove a component (low-level; cascade is the command's job)."""
         if component_id not in self._components:
             raise KeyError(component_id)
         del self._components[component_id]
         self._set_dirty()
-        self.componentRemoved.emit(component_id)
+        if self._batch_builder is not None:
+            self._batch_builder.record_component_removed(component_id)
+        else:
+            self.componentRemoved.emit(component_id)
 
     def move_component(self, component_id: str, new_pos: QPointF) -> None:
-        """Move a component to a new scene-coordinate position.
-
-        Applies ε=1e-6 no-op suppression per ADR-020: if the new
-        position is approximately equal to the current position
-        (squared-distance tolerance), the call is a no-op — no signal,
-        no dirty change, no `modified_at` bump.
-
-        On a real move, `componentMoved(id, old_pos, new_pos)` is
-        emitted with both endpoints as `QPointF` per ADR-018.
-
-        Args:
-            component_id: Internal `cmp_<ULID>` identifier.
-            new_pos: Target scene-coordinate position.
-
-        Raises:
-            KeyError: If `component_id` is not present in the
-                workspace.
-        """
+        """Move a component; ε no-op suppression (ADR-020)."""
         current = self._components.get(component_id)
         if current is None:
             raise KeyError(component_id)
@@ -387,37 +605,13 @@ class WorkspaceModel(QObject):
         )
         self._components[component_id] = new_instance
         self._set_dirty()
-        self.componentMoved.emit(component_id, current_pos, new_pos)
+        if self._batch_builder is not None:
+            self._batch_builder.record_component_changed(component_id)
+        else:
+            self.componentMoved.emit(component_id, current_pos, new_pos)
 
     def rotate_component(self, component_id: str, new_rotation: float) -> None:
-        """Rotate a component to a new angle (degrees).
-
-        Phase-1 quantization rule (`02 §22`/`§23`) is enforced at the
-        mutation API layer: `new_rotation` must be approximately equal
-        (within ε) to one of `{0.0, 90.0, 180.0, 270.0}`. Sub-ε drift
-        around those values is **snapped to the canonical exact angle**
-        so storage stays canonical and downstream comparisons can use
-        `==`.
-
-        Validation order: `new_rotation` is validated and canonicalized
-        before the component existence check (see the module
-        docstring §"Validation order in mutation methods").
-
-        Applies ε=1e-6 no-op suppression per ADR-020. On a real
-        rotation, `componentRotated(id, old, new_canonical)` is emitted
-        with both endpoints as `float` per ADR-018.
-
-        Args:
-            component_id: Internal `cmp_<ULID>` identifier.
-            new_rotation: Target rotation in degrees. Snapped to the
-                canonical Phase-1 angle if within ε.
-
-        Raises:
-            ValueError: If `new_rotation` is not (within ε) a Phase-1
-                quantization angle. Raised before the existence check.
-            KeyError: If `component_id` is not present in the
-                workspace. Only raised when `new_rotation` is valid.
-        """
+        """Rotate a component; canonicalize, ε no-op, validation order rule."""
         canonical = _canonical_rotation(new_rotation)
         current = self._components.get(component_id)
         if current is None:
@@ -432,7 +626,10 @@ class WorkspaceModel(QObject):
         )
         self._components[component_id] = new_instance
         self._set_dirty()
-        self.componentRotated.emit(component_id, old_rotation, canonical)
+        if self._batch_builder is not None:
+            self._batch_builder.record_component_changed(component_id)
+        else:
+            self.componentRotated.emit(component_id, old_rotation, canonical)
 
     def set_parameter(
         self,
@@ -440,42 +637,10 @@ class WorkspaceModel(QObject):
         param_name: str,
         value: Any,
     ) -> None:
-        """Set or upsert a parameter value on a component.
-
-        Phase 1 behavior: **upsert**. If `param_name` is not already
-        in the component's parameters dict, it is added; otherwise it
-        is overwritten. ParameterSchemaRegistry (S1.B) and
-        parameter-schema-dispatched equality (S1.6) are not yet
-        implemented.
-
-        TODO(S1.6): After parameter schema dispatch lands:
-            - reject param names not declared in the component
-              definition (raise `KeyError` or `ValueError`);
-            - dispatch equality per parameter type (float uses
-              ε-tolerance per ADR-020, others use exact `==`).
-
-        Until then, upsert + exact `==` no-op suppression is the stub.
-
-        On a real edit, emits `componentChanged(component_id)` (the
-        ADR-018 catch-all for parameter / label / tag / lock /
-        annotation edits) and bumps `modified_at`.
-
-        Args:
-            component_id: Internal `cmp_<ULID>` identifier.
-            param_name: Parameter identifier as declared in the
-                component definition.
-            value: New parameter value.
-
-        Raises:
-            KeyError: If `component_id` is not present in the
-                workspace.
-        """
+        """Set or upsert a parameter value (TODO(S1.6) for schema dispatch)."""
         current = self._components.get(component_id)
         if current is None:
             raise KeyError(component_id)
-        # Phase-1 stub: exact `==` no-op suppression. Replaced in S1.6
-        # by parameter-schema-dispatched equality (float → ε-tolerance,
-        # others → exact ==).
         if param_name in current.parameters and current.parameters[param_name] == value:
             return
         new_parameters = dict(current.parameters)
@@ -487,34 +652,13 @@ class WorkspaceModel(QObject):
         )
         self._components[component_id] = new_instance
         self._set_dirty()
-        self.componentChanged.emit(component_id)
+        if self._batch_builder is not None:
+            self._batch_builder.record_component_changed(component_id)
+        else:
+            self.componentChanged.emit(component_id)
 
     def set_custom_label(self, component_id: str, new_label: str) -> None:
-        """Set the custom (user-editable) label on a component.
-
-        The label is normalized via `str.strip()` before comparison
-        and storage; trailing or leading whitespace is not part of
-        the canonical label. This prevents phantom `componentChanged`
-        emissions and dirty transitions from typing whitespace that
-        the user perceives as unchanged. To clear the label, pass an
-        empty string (or any whitespace-only string — both canonicalize
-        to "").
-
-        Validation order:
-            1. Argument normalization (here: `strip()`).
-            2. Existence check.
-            3. No-op suppression (canonical-vs-canonical comparison).
-            4. Mutation + `componentChanged` emission.
-
-        Args:
-            component_id: Internal `cmp_<ULID>` identifier.
-            new_label: New label text. Whitespace-trimmed before
-                storage.
-
-        Raises:
-            KeyError: If `component_id` is not present in the
-                workspace.
-        """
+        """Set the custom label; whitespace strip canonicalization."""
         canonical_label = new_label.strip()
         current = self._components.get(component_id)
         if current is None:
@@ -528,24 +672,13 @@ class WorkspaceModel(QObject):
         )
         self._components[component_id] = new_instance
         self._set_dirty()
-        self.componentChanged.emit(component_id)
+        if self._batch_builder is not None:
+            self._batch_builder.record_component_changed(component_id)
+        else:
+            self.componentChanged.emit(component_id)
 
     def set_locked(self, component_id: str, locked: bool) -> None:
-        """Set the locked flag on a component.
-
-        Locked components are protected from accidental edits per
-        `02 §38`. This raw mutation simply flips the flag; lock-aware
-        editing rules (e.g., refusing move on a locked component) are
-        enforced at the command layer (S1.7).
-
-        Args:
-            component_id: Internal `cmp_<ULID>` identifier.
-            locked: New locked state.
-
-        Raises:
-            KeyError: If `component_id` is not present in the
-                workspace.
-        """
+        """Set the locked flag; exact bool == no-op."""
         current = self._components.get(component_id)
         if current is None:
             raise KeyError(component_id)
@@ -558,29 +691,17 @@ class WorkspaceModel(QObject):
         )
         self._components[component_id] = new_instance
         self._set_dirty()
-        self.componentChanged.emit(component_id)
+        if self._batch_builder is not None:
+            self._batch_builder.record_component_changed(component_id)
+        else:
+            self.componentChanged.emit(component_id)
 
     def set_tags(
         self,
         component_id: str,
         new_tags: tuple[str, ...],
     ) -> None:
-        """Set the tags tuple on a component (replaces wholesale).
-
-        Tags are stored as a tuple to align with
-        `ComponentInstance.tags`. Mypy strict will reject lists or
-        other sequences; callers must pass a tuple. Empty tuple
-        clears all tags.
-
-        Args:
-            component_id: Internal `cmp_<ULID>` identifier.
-            new_tags: New tags tuple. Replaces the current tuple
-                wholesale.
-
-        Raises:
-            KeyError: If `component_id` is not present in the
-                workspace.
-        """
+        """Set the tags tuple wholesale; exact `==` no-op."""
         current = self._components.get(component_id)
         if current is None:
             raise KeyError(component_id)
@@ -593,33 +714,17 @@ class WorkspaceModel(QObject):
         )
         self._components[component_id] = new_instance
         self._set_dirty()
-        self.componentChanged.emit(component_id)
+        if self._batch_builder is not None:
+            self._batch_builder.record_component_changed(component_id)
+        else:
+            self.componentChanged.emit(component_id)
 
     def set_annotations(
         self,
         component_id: str,
         new_annotations: Mapping[str, Any],
     ) -> None:
-        """Set the annotations dict on a component (replaces wholesale).
-
-        Per `02 §11.4`, `set_*` methods replace the field wholesale.
-        To merge, callers must read-merge-write at the call site, or
-        use a future `update_annotations` method. The wholesale
-        semantics are intentional and documented to avoid silent
-        data loss when nested dicts are involved.
-
-        The input mapping is copied to insulate callers from later
-        mutations.
-
-        Args:
-            component_id: Internal `cmp_<ULID>` identifier.
-            new_annotations: New annotations mapping. Replaces the
-                current dict wholesale.
-
-        Raises:
-            KeyError: If `component_id` is not present in the
-                workspace.
-        """
+        """Set the annotations dict wholesale (replace, not merge)."""
         current = self._components.get(component_id)
         if current is None:
             raise KeyError(component_id)
@@ -633,7 +738,10 @@ class WorkspaceModel(QObject):
         )
         self._components[component_id] = new_instance
         self._set_dirty()
-        self.componentChanged.emit(component_id)
+        if self._batch_builder is not None:
+            self._batch_builder.record_component_changed(component_id)
+        else:
+            self.componentChanged.emit(component_id)
 
     # ------------------------------------------------------------------ #
     # Public mutation API — connections
@@ -648,49 +756,7 @@ class WorkspaceModel(QObject):
         label: str = "",
         style: Mapping[str, Any] | None = None,
     ) -> str:
-        """Add a connection between two component ports and return its id.
-
-        This is a **low-level raw mutation**. It does NOT perform
-        validation: no duplicate detection, no domain compatibility
-        check, no self-connection rejection, no port-existence check.
-        All such validation is the responsibility of higher layers:
-
-        * **Primary defense (S1.7 command layer):** the
-          `AddConnectionCommand` runs the connection validator
-          (`02 §20.1`) before invoking this method. If validation
-          fails, this method is never called. This is the path all
-          UI-initiated edits take per ADR-005.
-        * **Secondary defense (S1.4 incremental validator):** runs
-          after mutations as a safety net for bypass or corrupt-load
-          scenarios. Not the primary check.
-
-        Duplicate detection per `02 §14.3`: a connection between the
-        same two ports is a duplicate (commutatively — A→B and B→A
-        are the same connection). The command-layer validator uses
-        `frozenset({(source.component_id, source.port_id),
-        (target.component_id, target.port_id)})` for comparison. This
-        raw method does no such check; calling it twice with the same
-        ports produces two distinct connections with different ULIDs.
-
-        `metadata` and `extensions` cannot be supplied through the
-        public API; per `02 §11.4` they are internal / round-trip
-        only and are populated as empty dicts.
-
-        Args:
-            source: Endpoint reference at the source side
-                (`(component_id, port_id)`).
-            target: Endpoint reference at the target side.
-            routing: Optional routing specification. Defaults to
-                `ConnectionRouting()` (orthogonal style, empty
-                waypoints).
-            label: Optional wire label. Defaults to "".
-            style: Optional visual style overrides per `02 §39`.
-                Copied. Defaults to empty dict.
-
-        Returns:
-            Internal `connection_id` (`con_<ULID>`) of the new
-            connection.
-        """
+        """Add a connection (raw mutation; validation at command layer)."""
         connection = self._build_connection(
             source=source,
             target=target,
@@ -700,27 +766,22 @@ class WorkspaceModel(QObject):
         )
         self._connections[connection.id] = connection
         self._set_dirty()
-        self.connectionAdded.emit(connection.id)
+        if self._batch_builder is not None:
+            self._batch_builder.record_connection_added(connection.id)
+        else:
+            self.connectionAdded.emit(connection.id)
         return connection.id
 
     def remove_connection(self, connection_id: str) -> None:
-        """Remove a connection from the workspace.
-
-        Args:
-            connection_id: Internal `con_<ULID>` identifier.
-
-        Raises:
-            KeyError: If `connection_id` is not present in the
-                workspace. Command-layer wrappers (S1.7) are expected
-                to translate this into a domain error before
-                surfacing it to the UI; see ADR-005 and the error
-                catalog in `specs/11_error_code_catalog.md`.
-        """
+        """Remove a connection."""
         if connection_id not in self._connections:
             raise KeyError(connection_id)
         del self._connections[connection_id]
         self._set_dirty()
-        self.connectionRemoved.emit(connection_id)
+        if self._batch_builder is not None:
+            self._batch_builder.record_connection_removed(connection_id)
+        else:
+            self.connectionRemoved.emit(connection_id)
 
     def update_connection(
         self,
@@ -730,37 +791,7 @@ class WorkspaceModel(QObject):
         routing: ConnectionRouting | None = None,
         style: Mapping[str, Any] | None = None,
     ) -> None:
-        """Update one or more user-editable fields on a connection.
-
-        Combo updater: each keyword argument is optional; `None`
-        means "leave this field unchanged". To clear `label`, pass
-        an empty string. To clear `style`, pass an empty mapping.
-        (`None` cannot be used as "clear" because it overlaps with
-        the "unchanged" sentinel.)
-
-        Per `02 §11.4`, this method does not modify `source` or
-        `target`. Endpoint re-targeting (`02 §37`) is a future
-        command-layer feature delivered via `ModifyConnectionCommand`.
-
-        No-op suppression: if every keyword argument is `None`, the
-        call is a no-op (no signal, no dirty change). Per-field
-        no-op detection is intentionally **not** performed at this
-        layer; if any argument is non-`None`, the connection is
-        considered changed and `connectionChanged(connection_id)` is
-        emitted exactly once.
-
-        Args:
-            connection_id: Internal `con_<ULID>` identifier.
-            label: New label, or `None` to leave unchanged.
-            routing: New `ConnectionRouting`, or `None` to leave
-                unchanged.
-            style: New style mapping (copied), or `None` to leave
-                unchanged.
-
-        Raises:
-            KeyError: If `connection_id` is not present in the
-                workspace.
-        """
+        """Combo update (label / routing / style); all-None → no-op."""
         current = self._connections.get(connection_id)
         if current is None:
             raise KeyError(connection_id)
@@ -777,17 +808,13 @@ class WorkspaceModel(QObject):
         )
         self._connections[connection_id] = new_instance
         self._set_dirty()
-        self.connectionChanged.emit(connection_id)
+        if self._batch_builder is not None:
+            self._batch_builder.record_connection_changed(connection_id)
+        else:
+            self.connectionChanged.emit(connection_id)
 
     # ------------------------------------------------------------------ #
     # Internal builders
-    #
-    # These produce fresh frozen-dataclass instances with newly
-    # generated identity fields and timestamps. They do NOT mutate
-    # `_components` / `_connections` — that is the responsibility of
-    # the public mutation API. Splitting build from insert keeps ID
-    # generation testable in isolation and lets future commands
-    # construct candidate instances before deciding whether to commit.
     # ------------------------------------------------------------------ #
 
     def _build_component_instance(
@@ -810,45 +837,7 @@ class WorkspaceModel(QObject):
         metadata: Mapping[str, Any] | None = None,
         extensions: Mapping[str, Any] | None = None,
     ) -> ComponentInstance:
-        """Mint a fresh `ComponentInstance` with new identity and timestamps.
-
-        Generates the internal ULID (`cmp_…`), the next monotonic
-        display ID for the component type, and matching `created_at` /
-        `modified_at` timestamps. The `type_slug` for display-counter
-        lookup is taken as the last dotted segment of `definition_id`
-        per the convention used by `WorkspaceIdGenerator`.
-
-        The returned instance is **not** added to `_components`; the
-        caller (the public mutation method `add_component`) is
-        responsible for insertion and for canonicalizing `rotation`
-        via `_canonical_rotation` before invoking this builder.
-
-        Args:
-            definition_id: Dotted identifier of the source component
-                definition.
-            type: Definition type label used for display.
-            display_name: Human-readable definition name.
-            domain: Physical domain identifier.
-            category: Library category from the definition.
-            position: Scene-coordinate `(x, y)` of the component
-                anchor.
-            visual: SVG variant selector.
-            physical_attributes: Declared physical-attribute flags.
-            custom_label: Optional user-editable label. Defaults to
-                "".
-            rotation: Rotation in degrees; assumed already
-                canonicalized by the caller. Defaults to 0.0.
-            parameters: Optional parameter mapping. Copied.
-            locked: Initial locked state. Defaults to False.
-            tags: Tuple of free-form tags.
-            annotations: Optional annotations mapping. Copied.
-            metadata: Optional metadata mapping. Copied.
-            extensions: Optional extensions mapping. Copied.
-
-        Returns:
-            Newly constructed `ComponentInstance` with freshly minted
-            `id`, `display_id`, `created_at`, and `modified_at`.
-        """
+        """Mint a fresh `ComponentInstance` (no insert; caller commits)."""
         type_slug = definition_id.rsplit(".", 1)[-1]
         now = _now_iso8601()
         return ComponentInstance(
@@ -885,29 +874,7 @@ class WorkspaceModel(QObject):
         metadata: Mapping[str, Any] | None = None,
         extensions: Mapping[str, Any] | None = None,
     ) -> Connection:
-        """Mint a fresh `Connection` with new identity.
-
-        Generates the internal ULID (`con_…`) and the next monotonic
-        global display ID (`conn_<n>`). The returned instance is
-        **not** added to `_connections`; the caller (public
-        `add_connection`) is responsible for insertion.
-
-        Args:
-            source: Endpoint reference at the source side.
-            target: Endpoint reference at the target side.
-            routing: Optional routing specification. Defaults to a
-                fresh `ConnectionRouting()` (orthogonal style, empty
-                waypoints).
-            label: Optional wire label. Defaults to "".
-            style: Optional visual style overrides per `02 §39`.
-                Copied.
-            metadata: Optional metadata mapping. Copied.
-            extensions: Optional extensions mapping. Copied.
-
-        Returns:
-            Newly constructed `Connection` with freshly minted `id`
-            and `display_id`.
-        """
+        """Mint a fresh `Connection` (no insert; caller commits)."""
         return Connection(
             id=self._id_generator.new_connection_id(),
             display_id=self._id_generator.next_connection_display_id(),
@@ -925,50 +892,28 @@ class WorkspaceModel(QObject):
     # ------------------------------------------------------------------ #
 
     def _set_dirty(self) -> None:
-        """Transition dirty `False → True` and emit `dirtyChanged(True)`.
+        """Transition dirty `False → True`; batch-aware emission.
 
-        Per ADR-020 §"`dirtyChanged` emits on transitions only", this
-        helper is idempotent: a second call while already dirty is a
-        no-op (no extra emission). Mutation methods may call this on
-        every successful edit without worrying about spam.
+        Per ADR-020 transition-only rule: if already dirty, no-op.
+        Outside a batch, emits `dirtyChanged(True)`. Inside a batch,
+        marks the change_set's `dirty_changed` aggregate flag instead;
+        no individual `dirtyChanged` emission until outermost exit
+        (and even then, only the change_set carries the transition;
+        subscribers query `model.is_dirty` for the actual state).
 
-        TODO(S1.7): Replace with `QUndoStack.cleanChanged` binding
-        once the command stack lands. See ADR-020 §"`QUndoStack.cleanState`
-        integration (S1.7)".
+        TODO(S1.7): Replace with `QUndoStack.cleanChanged` binding.
         """
-        if not self._dirty:
-            self._dirty = True
+        if self._dirty:
+            return
+        self._dirty = True
+        if self._batch_builder is not None:
+            self._batch_builder.mark_dirty_changed()
+        else:
             self.dirtyChanged.emit(True)
 
 
 def _canonical_rotation(rotation: float) -> float:
-    """Validate a rotation value and return the canonical Phase-1 angle.
-
-    Per ADR-018 the signal payload type is `float`, but the Phase-1
-    quantization rule from `02 §22`/`§23` restricts valid values to
-    `{0.0, 90.0, 180.0, 270.0}`. This helper enforces that rule and
-    **snaps sub-ε drift** to the canonical valid angle, so internal
-    storage stays exact and downstream comparisons can use `==`.
-
-    Used by both `add_component` and `rotate_component`. Both methods
-    store the returned canonical value, not the caller's drifted
-    input, and the signal payload also carries the canonical value.
-
-    Subscribers receive `float` payloads but must not hard-code
-    membership in the closed `{0.0, 90.0, 180.0, 270.0}` set —
-    Phase 2+ may admit additional angles (e.g., 45°). The contract
-    only guarantees a `float` in degrees.
-
-    Args:
-        rotation: Candidate rotation value in degrees.
-
-    Returns:
-        The matching canonical angle from `_VALID_ROTATIONS`.
-
-    Raises:
-        ValueError: If `rotation` is not approximately equal (within
-            ε) to any value in `_VALID_ROTATIONS`.
-    """
+    """Validate a rotation and return the canonical Phase-1 angle."""
     for valid in _VALID_ROTATIONS:
         if approx_equal_float(rotation, valid):
             return valid
@@ -976,14 +921,7 @@ def _canonical_rotation(rotation: float) -> float:
 
 
 def _now_iso8601() -> str:
-    """Return current UTC time as an ISO-8601 string.
-
-    Used to stamp `created_at` / `modified_at` on freshly built or
-    mutated `ComponentInstance` records. Microsecond precision is
-    included so that two builds in the same millisecond do not collide
-    on the timestamp (instance uniqueness is still guaranteed by
-    ULID).
-    """
+    """Return current UTC time as an ISO-8601 string."""
     return datetime.now(UTC).isoformat(timespec="microseconds")
 
 
