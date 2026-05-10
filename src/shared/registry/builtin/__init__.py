@@ -1,12 +1,19 @@
 """shared/registry/builtin: Phase 1 built-in component definitions.
 
-Per ADR-021 and `01 §13` MVP list. The current set covers the
-full Phase 1 electrical-analog library (11 definitions), the
-full Phase 1 mechanical-translational components block (7
-definitions), and the MVP mechanical-translational sources
-(2 definitions). Random Road Source is marked optional per
-`01 §13.5` and is deferred to a later Phase-1 sub-release.
-Mechanical sensors land in S1.B.2d.
+Per ADR-021 and `01 §13` MVP list. With S1.B.2d this module now
+ships the full Phase-1 MVP library: all electrical-analog defs
+(11), all mechanical-translational components / sources / sensors
+(7 + 2 + 3 = 12), for a total of 23 definitions.
+
+Spec-driven deferrals:
+
+* Random Road Source — `01 §13.5` marks optional; deferred to a
+  later Phase-1 sub-release.
+* Ideal Switch — `01 §13.1` marks deferred.
+* Signal Voltage's `signal_input` control port — `01 §13.2`
+  marks Phase 2 work.
+* Rotational and digital domains — `01 §13.7` / `01 §2.2` mark
+  Phase 2+.
 
 Library subtrees (path → count):
 
@@ -21,6 +28,8 @@ Library subtrees (path → count):
 * Mechanical / Translational / Sources — 2 (Force Source,
   Step Force Source; Random Road Source deferred per
   `01 §13.5`)
+* Mechanical / Translational / Sensors — 3 (Position Sensor,
+  Velocity Sensor, Force Sensor)
 
 The `BUILTIN_COMPONENT_DEFINITIONS` tuple is the canonical
 construction argument for the default `ComponentRegistry`. A
@@ -60,11 +69,14 @@ from .electrical import (
 from .mechanical import (
     DAMPER_DEFINITION,
     FIXED_DEFINITION,
+    FORCE_SENSOR_DEFINITION,
     FORCE_SOURCE_DEFINITION,
     MASS_DEFINITION,
+    POSITION_SENSOR_DEFINITION,
     SPRING_DAMPER_DEFINITION,
     SPRING_DEFINITION,
     STEP_FORCE_SOURCE_DEFINITION,
+    VELOCITY_SENSOR_DEFINITION,
     WHEEL_BLACK_DEFINITION,
     WHEEL_WHITE_DEFINITION,
 )
@@ -99,6 +111,10 @@ BUILTIN_COMPONENT_DEFINITIONS = (
     # Mechanical Translational / Sources (2; Random Road Source deferred)
     FORCE_SOURCE_DEFINITION,
     STEP_FORCE_SOURCE_DEFINITION,
+    # Mechanical Translational / Sensors (3)
+    POSITION_SENSOR_DEFINITION,
+    VELOCITY_SENSOR_DEFINITION,
+    FORCE_SENSOR_DEFINITION,
 )
 
 
@@ -109,10 +125,12 @@ __all__ = [
     "CURRENT_SENSOR_DEFINITION",
     "DAMPER_DEFINITION",
     "FIXED_DEFINITION",
+    "FORCE_SENSOR_DEFINITION",
     "FORCE_SOURCE_DEFINITION",
     "GROUND_ELECTRIC_DEFINITION",
     "INDUCTOR_DEFINITION",
     "MASS_DEFINITION",
+    "POSITION_SENSOR_DEFINITION",
     "RAMP_VOLTAGE_DEFINITION",
     "RESISTOR_DEFINITION",
     "SIGNAL_VOLTAGE_DEFINITION",
@@ -121,6 +139,7 @@ __all__ = [
     "SPRING_DEFINITION",
     "STEP_FORCE_SOURCE_DEFINITION",
     "STEP_VOLTAGE_DEFINITION",
+    "VELOCITY_SENSOR_DEFINITION",
     "VOLTAGE_SENSOR_DEFINITION",
     "WHEEL_BLACK_DEFINITION",
     "WHEEL_WHITE_DEFINITION",

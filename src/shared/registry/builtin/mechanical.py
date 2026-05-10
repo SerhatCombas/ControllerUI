@@ -51,6 +51,16 @@ Sources (`01 §13.5`):
   `start_time`. Random Road Source is marked optional per
   `01 §13.5` and is deferred to a later Phase-1 sub-release.
 
+Sensors (`01 §13.6`):
+
+* `POSITION_SENSOR_DEFINITION` — single-port translational
+  position observer. No parameters; `physical_attributes`
+  default (passive observer).
+* `VELOCITY_SENSOR_DEFINITION` — single-port translational
+  velocity observer. No parameters.
+* `FORCE_SENSOR_DEFINITION` — two-port translational force
+  observer (flange_a / flange_b). No parameters.
+
 Each `library_path` follows `02 §13`-style tree categorization
 under `("Mechanical", "Translational", "Components")`. Definition
 `id`s use the `mechanics.translational.components.*` namespace
@@ -522,14 +532,111 @@ STEP_FORCE_SOURCE_DEFINITION = ComponentDefinition(
 )
 
 
+# ---------------------------------------------------------------------- #
+# Position Sensor — single-port translational position observer
+# ---------------------------------------------------------------------- #
+#
+# Mechanical sensors carry `motion="translational"` because the
+# motion type is load-bearing for downstream boundary / DOF
+# reasoning even on passive observers. Unlike sources they keep
+# `source=False`.
+
+POSITION_SENSOR_DEFINITION = ComponentDefinition(
+    id="mechanics.translational.sensors.position_sensor",
+    display_name="Position Sensor",
+    short_name="x",
+    description="Ideal translational position observer (no loading).",
+    domain="mechanical_translational",
+    library_path=("Mechanical", "Translational", "Sensors"),
+    category="sensor",
+    tags=("mechanical", "translational", "sensor"),
+    ports=(
+        PortDefinition(
+            id="flange",
+            display_name="Flange",
+            domain="mechanical_translational",
+            relative_position=(0.5, 1.0),
+        ),
+    ),
+    parameters=(),
+    visual=LibraryVisualSpec(svg_id="mechanical_position_sensor_default"),
+    physical_attributes=PhysicalAttributes(motion="translational"),
+)
+
+# ---------------------------------------------------------------------- #
+# Velocity Sensor — single-port translational velocity observer
+# ---------------------------------------------------------------------- #
+
+VELOCITY_SENSOR_DEFINITION = ComponentDefinition(
+    id="mechanics.translational.sensors.velocity_sensor",
+    display_name="Velocity Sensor",
+    short_name="v",
+    description="Ideal translational velocity observer (no loading).",
+    domain="mechanical_translational",
+    library_path=("Mechanical", "Translational", "Sensors"),
+    category="sensor",
+    tags=("mechanical", "translational", "sensor"),
+    ports=(
+        PortDefinition(
+            id="flange",
+            display_name="Flange",
+            domain="mechanical_translational",
+            relative_position=(0.5, 1.0),
+        ),
+    ),
+    parameters=(),
+    visual=LibraryVisualSpec(svg_id="mechanical_velocity_sensor_default"),
+    physical_attributes=PhysicalAttributes(motion="translational"),
+)
+
+# ---------------------------------------------------------------------- #
+# Force Sensor — two-port translational force observer
+# ---------------------------------------------------------------------- #
+
+FORCE_SENSOR_DEFINITION = ComponentDefinition(
+    id="mechanics.translational.sensors.force_sensor",
+    display_name="Force Sensor",
+    short_name="F",
+    description=(
+        "Ideal translational force observer. Two-port because force is "
+        "measured between two mechanical points (analogous to a voltage "
+        "sensor on the electrical side)."
+    ),
+    domain="mechanical_translational",
+    library_path=("Mechanical", "Translational", "Sensors"),
+    category="sensor",
+    tags=("mechanical", "translational", "sensor"),
+    ports=(
+        PortDefinition(
+            id="flange_a",
+            display_name="Flange A",
+            domain="mechanical_translational",
+            relative_position=(0.0, 0.5),
+        ),
+        PortDefinition(
+            id="flange_b",
+            display_name="Flange B",
+            domain="mechanical_translational",
+            relative_position=(1.0, 0.5),
+        ),
+    ),
+    parameters=(),
+    visual=LibraryVisualSpec(svg_id="mechanical_force_sensor_default"),
+    physical_attributes=PhysicalAttributes(motion="translational"),
+)
+
+
 __all__ = [
     "DAMPER_DEFINITION",
     "FIXED_DEFINITION",
+    "FORCE_SENSOR_DEFINITION",
     "FORCE_SOURCE_DEFINITION",
     "MASS_DEFINITION",
+    "POSITION_SENSOR_DEFINITION",
     "SPRING_DAMPER_DEFINITION",
     "SPRING_DEFINITION",
     "STEP_FORCE_SOURCE_DEFINITION",
+    "VELOCITY_SENSOR_DEFINITION",
     "WHEEL_BLACK_DEFINITION",
     "WHEEL_WHITE_DEFINITION",
 ]

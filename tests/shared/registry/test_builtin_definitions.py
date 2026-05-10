@@ -20,7 +20,9 @@ History of growth (the tuple expands as S1.B.2 stages land):
 * S1.B.2c — MVP mechanical sources (+force_source,
   +step_force_source), bringing the tuple to 20. Random Road
   Source is marked optional per `01 §13.5` and is deferred.
-* S1.B.2d — mechanical sensors (position/velocity/force).
+* S1.B.2d — mechanical sensors (+position_sensor,
+  +velocity_sensor, +force_sensor), bringing the tuple to its
+  Phase-1 final size of 23.
 
 Covers:
 
@@ -52,10 +54,12 @@ from shared.registry.builtin import (
     CURRENT_SENSOR_DEFINITION,
     DAMPER_DEFINITION,
     FIXED_DEFINITION,
+    FORCE_SENSOR_DEFINITION,
     FORCE_SOURCE_DEFINITION,
     GROUND_ELECTRIC_DEFINITION,
     INDUCTOR_DEFINITION,
     MASS_DEFINITION,
+    POSITION_SENSOR_DEFINITION,
     RAMP_VOLTAGE_DEFINITION,
     RESISTOR_DEFINITION,
     SIGNAL_VOLTAGE_DEFINITION,
@@ -64,6 +68,7 @@ from shared.registry.builtin import (
     SPRING_DEFINITION,
     STEP_FORCE_SOURCE_DEFINITION,
     STEP_VOLTAGE_DEFINITION,
+    VELOCITY_SENSOR_DEFINITION,
     VOLTAGE_SENSOR_DEFINITION,
     WHEEL_BLACK_DEFINITION,
     WHEEL_WHITE_DEFINITION,
@@ -95,12 +100,22 @@ _EXPECTED_DEFINITION_IDS: tuple[tuple[str, ComponentDefinition], ...] = (
     ),
     ("mechanics.translational.components.wheel_black", WHEEL_BLACK_DEFINITION),
     ("mechanics.translational.components.wheel_white", WHEEL_WHITE_DEFINITION),
-    # Mechanical Translational / Sources (2; sensors in S1.B.2d)
+    # Mechanical Translational / Sources (2)
     ("mechanics.translational.sources.force_source", FORCE_SOURCE_DEFINITION),
     (
         "mechanics.translational.sources.step_force_source",
         STEP_FORCE_SOURCE_DEFINITION,
     ),
+    # Mechanical Translational / Sensors (3)
+    (
+        "mechanics.translational.sensors.position_sensor",
+        POSITION_SENSOR_DEFINITION,
+    ),
+    (
+        "mechanics.translational.sensors.velocity_sensor",
+        VELOCITY_SENSOR_DEFINITION,
+    ),
+    ("mechanics.translational.sensors.force_sensor", FORCE_SENSOR_DEFINITION),
 )
 
 # Source definitions and their expected source_type, derived from the
@@ -117,9 +132,20 @@ _EXPECTED_SOURCE_TYPES: tuple[tuple[ComponentDefinition, str], ...] = (
     (STEP_FORCE_SOURCE_DEFINITION, "step"),
 )
 
-_SENSOR_DEFINITIONS: tuple[ComponentDefinition, ...] = (
+# Sensors that should carry the default `PhysicalAttributes()`
+# (no `source`, no `boundary`). Electrical sensors leave `motion`
+# as `None`; mechanical sensors carry `motion="translational"` (the
+# motion type is load-bearing for downstream DOF reasoning), so the
+# two groups are tested separately.
+_PASSIVE_SENSOR_DEFINITIONS: tuple[ComponentDefinition, ...] = (
     CURRENT_SENSOR_DEFINITION,
     VOLTAGE_SENSOR_DEFINITION,
+)
+
+_MECHANICAL_SENSOR_DEFINITIONS: tuple[ComponentDefinition, ...] = (
+    POSITION_SENSOR_DEFINITION,
+    VELOCITY_SENSOR_DEFINITION,
+    FORCE_SENSOR_DEFINITION,
 )
 
 
@@ -231,11 +257,10 @@ def test_builtin_registry_filters_by_electrical_domain() -> None:
 @pytest.mark.unit
 def test_builtin_registry_filters_by_mechanical_domain() -> None:
     """`by_domain("mechanical_translational")` returns the full Phase-1
-    components block plus the MVP sources (S1.B.2c).
+    mechanical-translational set: components + sources + sensors.
 
-    Mechanical sensors land in S1.B.2d; this assertion will grow at
-    that stage. Random Road Source is marked optional per `01 §13.5`
-    and is intentionally absent.
+    Random Road Source is marked optional per `01 §13.5` and is
+    intentionally absent.
     """
     registry = ComponentRegistry(BUILTIN_COMPONENT_DEFINITIONS)
 
@@ -251,6 +276,9 @@ def test_builtin_registry_filters_by_mechanical_domain() -> None:
         "mechanics.translational.components.wheel_white",
         "mechanics.translational.sources.force_source",
         "mechanics.translational.sources.step_force_source",
+        "mechanics.translational.sensors.position_sensor",
+        "mechanics.translational.sensors.velocity_sensor",
+        "mechanics.translational.sensors.force_sensor",
     }
 
 
@@ -337,12 +365,12 @@ def test_each_source_definition_declares_source_physical_attributes(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("definition", _SENSOR_DEFINITIONS)
-def test_each_sensor_definition_uses_default_physical_attributes(
+@pytest.mark.parametrize("definition", _PASSIVE_SENSOR_DEFINITIONS)
+def test_each_passive_sensor_definition_uses_default_physical_attributes(
     definition: ComponentDefinition,
 ) -> None:
-    """Sensors carry the default `PhysicalAttributes()` — they are
-    passive observers and do not inject energy, set a mechanical
+    """Electrical sensors carry the default `PhysicalAttributes()` —
+    they are passive observers and do not inject energy, set a
     boundary, or declare motion. Their sensor role is recorded by
     `category` only.
     """
@@ -352,3 +380,21 @@ def test_each_sensor_definition_uses_default_physical_attributes(
     assert definition.physical_attributes.boundary is None
     assert definition.physical_attributes.motion is None
     assert definition.physical_attributes.directional is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("definition", _MECHANICAL_SENSOR_DEFINITIONS)
+def test_each_mechanical_sensor_carries_translational_motion(
+    definition: ComponentDefinition,
+) -> None:
+    """Mechanical sensors carry `motion="translational"` even though
+    they are passive observers — downstream DOF / boundary reasoning
+    treats motion type as a load-bearing attribute. They keep
+    `source=False` and `boundary=None` (no energy injection, no
+    mechanical clamp).
+    """
+    assert definition.category == "sensor"
+    assert definition.physical_attributes.source is False
+    assert definition.physical_attributes.source_type is None
+    assert definition.physical_attributes.boundary is None
+    assert definition.physical_attributes.motion == "translational"
