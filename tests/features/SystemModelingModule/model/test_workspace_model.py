@@ -1,4 +1,4 @@
-"""Unit tests for `WorkspaceModel` (S1.3a + S1.3b + S1.3c.1 + S1.3c.2a).
+"""Unit tests for `WorkspaceModel` (S1.3a + S1.3b + S1.3c.1 + S1.3c.2a + S1.3c.2b).
 
 Covers (cumulative):
 
@@ -11,19 +11,24 @@ Covers (cumulative):
   the model and connectable; `add_component`, `remove_component`, and
   `move_component` mutate state, emit the correct fine-grained signal,
   and drive transition-only `dirtyChanged` emission. ε=1e-6 no-op
-  suppression per ADR-020 is enforced on `move_component`. Missing
-  identifiers raise `KeyError`.
+  suppression on `move_component`. Missing identifiers raise
+  `KeyError`.
 * S1.3c.2a — `ComponentInstance.rotation` is `float` per ADR-018;
-  `_canonical_rotation` shared helper validates against the Phase-1
-  `{0.0, 90.0, 180.0, 270.0}` quantization rule and snaps sub-ε drift
-  to the canonical angle. Both `add_component` and `rotate_component`
-  store the canonical value, not caller drift, and the signal payload
-  in `componentRotated` is also canonical. Validation order in
+  `_canonical_rotation` validates and snaps sub-ε drift; both
+  `add_component` and `rotate_component` store the canonical value;
+  `componentRotated` signal payload is canonical. Validation order in
   rotate_component is argument-first / existence-second.
+* S1.3c.2b — five component property setters (`set_parameter`,
+  `set_custom_label`, `set_locked`, `set_tags`, `set_annotations`)
+  and three connection mutations (`add_connection`,
+  `remove_connection`, `update_connection`). `set_custom_label`
+  applies whitespace strip canonicalization. `update_connection` is a
+  combo updater with all-None no-op suppression and a single
+  `connectionChanged` emission. `add_connection` is a low-level raw
+  mutation with no duplicate detection (validator chain documented
+  in the docstring).
 
-Public mutation API for connections, parameters, and property setters
-lands in S1.3c.2b. Batch mode (S1.3d) and `reset()` (S1.3e) are out of
-scope.
+Batch mode (S1.3d) and `reset()` (S1.3e) are out of scope.
 
 References
 ----------
@@ -32,7 +37,8 @@ References
 * `decisions/ADR-018-signal-payload-contracts.md`
 * `decisions/ADR-020-dirty-tracking-semantics.md`
 * `specs/02_workspace_requirements.md` §3 (Source of Truth), §4 (Signals),
-  §22 (Move/Delete), §23 (Rotation)
+  §11.4 (Field Mutability Matrix), §14 (Connection System), §22
+  (Move/Delete), §23 (Rotation), §38 (Locking)
 """
 
 from __future__ import annotations
@@ -502,23 +508,19 @@ def test_remove_component_raises_keyerror_for_unknown_id() -> None:
 def test_remove_component_does_not_cascade_to_attached_connections() -> None:
     """Raw `remove_component` is low-level; cascade is the compound
     command's responsibility per ADR-005 (S1.7)."""
-    # TODO(S1.3c.2b): Rewrite using public `add_connection` once available.
     model = WorkspaceModel()
     a = model.add_component(**_add_kwargs())
     b = model.add_component(**_add_kwargs())
-    # Connect a→b directly via the internal builder + dict; the public
-    # `add_connection` API is S1.3c.2b and intentionally not used here.
-    conn = model._build_connection(
+    conn_id = model.add_connection(
         source=PortRef(component_id=a, port_id="p"),
         target=PortRef(component_id=b, port_id="p"),
     )
-    model._connections[conn.id] = conn
 
     model.remove_component(a)
 
     # Connection is dangling on `a` but still present in the store —
     # cascade is the compound command's job, not the raw mutation's.
-    assert conn.id in model.connections
+    assert conn_id in model.connections
 
 
 # ---------------------------------------------------------------------- #
@@ -688,11 +690,7 @@ def test_rotate_component_raises_valueerror_for_invalid_rotation() -> None:
 
 @pytest.mark.unit
 def test_rotate_component_snaps_sub_epsilon_drift_to_canonical_angle() -> None:
-    """Sub-ε drifted input is snapped to the canonical exact angle.
-
-    `math.degrees(math.pi / 2)` is `90.0` with sub-ULP drift; storage
-    must carry the exact canonical `90.0`, not the drifted input.
-    """
+    """Sub-ε drifted input is snapped to the canonical exact angle."""
     model = WorkspaceModel()
     new_id = model.add_component(**_add_kwargs(rotation=0.0))
 
@@ -704,11 +702,7 @@ def test_rotate_component_snaps_sub_epsilon_drift_to_canonical_angle() -> None:
 
 @pytest.mark.unit
 def test_rotate_component_emits_canonical_angle_in_signal() -> None:
-    """Signal payload `new_rotation` is canonical, not caller's drifted input.
-
-    Subscribers consume the delta payload directly per ADR-018 (no
-    refetch for delta-bearing signals), so the value must be exact.
-    """
+    """Signal payload `new_rotation` is canonical, not caller's drifted input."""
     model = WorkspaceModel()
     new_id = model.add_component(**_add_kwargs(rotation=0.0))
     received: list[tuple[str, float, float]] = []
@@ -737,19 +731,10 @@ def test_rotate_component_no_op_for_same_rotation() -> None:
 
 @pytest.mark.unit
 def test_rotate_component_no_op_when_both_input_and_current_are_drifted() -> None:
-    """Canonical storage guarantees that two drifted inputs targeting
-    the same canonical angle are detected as a no-op.
-
-    The first `add_component` snaps the input to `90.0` in storage; the
-    second `rotate_component` snaps its drifted input to `90.0` as
-    well, and the no-op check sees `90.0 == 90.0`. Without canonical
-    storage, the comparison would be `drifted_a != drifted_b` and
-    trigger a phantom mutation + emission.
-    """
+    """Canonical storage guarantees double-drifted no-op detection."""
     model = WorkspaceModel()
     drifted_90 = math.degrees(math.pi / 2)
     new_id = model.add_component(**_add_kwargs(rotation=drifted_90))
-    # Storage now holds the canonical 90.0; pre-condition for the test.
     assert model.components[new_id].rotation == 90.0
     received: list[Any] = []
     model.componentRotated.connect(lambda *args: received.append(args))
@@ -762,13 +747,7 @@ def test_rotate_component_no_op_when_both_input_and_current_are_drifted() -> Non
 
 @pytest.mark.unit
 def test_rotate_component_raises_keyerror_for_unknown_id() -> None:
-    """Unknown component_id raises a plain `KeyError` carrying the id.
-
-    Note: per the module-level validation-order rule, argument
-    validation runs *before* the existence check. A call with an
-    invalid rotation on a missing id raises `ValueError` first. This
-    test uses a valid rotation so we exercise the `KeyError` path.
-    """
+    """Unknown component_id raises a plain `KeyError` carrying the id."""
     model = WorkspaceModel()
 
     with pytest.raises(KeyError) as exc_info:
@@ -801,6 +780,533 @@ def test_rotate_component_no_op_does_not_update_modified_at() -> None:
     model.rotate_component(new_id, 180.0)
 
     assert model.components[new_id].modified_at == initial_modified
+
+
+# ---------------------------------------------------------------------- #
+# `set_parameter` (S1.3c.2b)
+# ---------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_set_parameter_updates_existing_parameter_value() -> None:
+    """Existing parameter is overwritten with the new value."""
+    model = WorkspaceModel()
+    new_id = model.add_component(
+        **_add_kwargs(parameters={"resistance": 1000.0}),
+    )
+
+    model.set_parameter(new_id, "resistance", 2200.0)
+
+    assert model.components[new_id].parameters == {"resistance": 2200.0}
+
+
+@pytest.mark.unit
+def test_set_parameter_upserts_unknown_parameter_in_phase1() -> None:
+    """Phase-1 stub: setting an unknown parameter adds it (TODO S1.6)."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(parameters={}))
+
+    model.set_parameter(new_id, "tolerance", 0.05)
+
+    assert model.components[new_id].parameters == {"tolerance": 0.05}
+
+
+@pytest.mark.unit
+def test_set_parameter_emits_component_changed_signal() -> None:
+    """`componentChanged` is the catch-all signal for parameter edits."""
+    model = WorkspaceModel()
+    new_id = model.add_component(
+        **_add_kwargs(parameters={"resistance": 1000.0}),
+    )
+    received: list[str] = []
+    model.componentChanged.connect(received.append)
+
+    model.set_parameter(new_id, "resistance", 2200.0)
+
+    assert received == [new_id]
+
+
+@pytest.mark.unit
+def test_set_parameter_no_op_for_same_value() -> None:
+    """Setting an existing parameter to the same value is a no-op."""
+    model = WorkspaceModel()
+    new_id = model.add_component(
+        **_add_kwargs(parameters={"resistance": 1000.0}),
+    )
+    received: list[str] = []
+    model.componentChanged.connect(received.append)
+
+    model.set_parameter(new_id, "resistance", 1000.0)
+
+    assert received == []
+
+
+@pytest.mark.unit
+def test_set_parameter_raises_keyerror_for_unknown_component_id() -> None:
+    """Unknown component_id raises a plain `KeyError` carrying the id."""
+    model = WorkspaceModel()
+
+    with pytest.raises(KeyError) as exc_info:
+        model.set_parameter("cmp_nonexistent", "resistance", 1000.0)
+
+    assert "cmp_nonexistent" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------- #
+# `set_custom_label` (S1.3c.2b)
+# ---------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_set_custom_label_updates_label() -> None:
+    """`set_custom_label` writes the new label into the instance."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(custom_label=""))
+
+    model.set_custom_label(new_id, "Input Resistor")
+
+    assert model.components[new_id].custom_label == "Input Resistor"
+
+
+@pytest.mark.unit
+def test_set_custom_label_emits_component_changed_signal() -> None:
+    """`componentChanged` is the catch-all signal for label edits."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs())
+    received: list[str] = []
+    model.componentChanged.connect(received.append)
+
+    model.set_custom_label(new_id, "R1")
+
+    assert received == [new_id]
+
+
+@pytest.mark.unit
+def test_set_custom_label_strips_whitespace_before_storage() -> None:
+    """Leading/trailing whitespace is normalized away before storage."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs())
+
+    model.set_custom_label(new_id, "  Input Resistor  ")
+
+    assert model.components[new_id].custom_label == "Input Resistor"
+
+
+@pytest.mark.unit
+def test_set_custom_label_whitespace_only_clears_label() -> None:
+    """A whitespace-only string canonicalizes to empty (clears the label)."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(custom_label="R1"))
+
+    model.set_custom_label(new_id, "   ")
+
+    assert model.components[new_id].custom_label == ""
+
+
+@pytest.mark.unit
+def test_set_custom_label_no_op_for_whitespace_variation() -> None:
+    """Setting current="foo" to "foo " (trailing space) is a no-op
+    after canonicalization. No phantom signal."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(custom_label="foo"))
+    received: list[str] = []
+    model.componentChanged.connect(received.append)
+
+    model.set_custom_label(new_id, "foo ")
+
+    assert received == []
+    assert model.components[new_id].custom_label == "foo"
+
+
+@pytest.mark.unit
+def test_set_custom_label_raises_keyerror_for_unknown_id() -> None:
+    """Unknown component_id raises a plain `KeyError` carrying the id."""
+    model = WorkspaceModel()
+
+    with pytest.raises(KeyError) as exc_info:
+        model.set_custom_label("cmp_nonexistent", "X")
+
+    assert "cmp_nonexistent" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------- #
+# `set_locked` (S1.3c.2b)
+# ---------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_set_locked_updates_flag_and_emits_signal() -> None:
+    """`set_locked` flips the flag and emits `componentChanged`."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(locked=False))
+    received: list[str] = []
+    model.componentChanged.connect(received.append)
+
+    model.set_locked(new_id, True)
+
+    assert model.components[new_id].locked is True
+    assert received == [new_id]
+
+
+@pytest.mark.unit
+def test_set_locked_no_op_for_same_value() -> None:
+    """Setting locked to its current value is a no-op."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(locked=True))
+    received: list[str] = []
+    model.componentChanged.connect(received.append)
+
+    model.set_locked(new_id, True)
+
+    assert received == []
+
+
+@pytest.mark.unit
+def test_set_locked_raises_keyerror_for_unknown_id() -> None:
+    """Unknown component_id raises a plain `KeyError` carrying the id."""
+    model = WorkspaceModel()
+
+    with pytest.raises(KeyError) as exc_info:
+        model.set_locked("cmp_nonexistent", True)
+
+    assert "cmp_nonexistent" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------- #
+# `set_tags` (S1.3c.2b)
+# ---------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_set_tags_updates_tuple_and_emits_signal() -> None:
+    """`set_tags` replaces the tags tuple wholesale and emits."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(tags=("input",)))
+    received: list[str] = []
+    model.componentChanged.connect(received.append)
+
+    model.set_tags(new_id, ("output", "critical"))
+
+    assert model.components[new_id].tags == ("output", "critical")
+    assert received == [new_id]
+
+
+@pytest.mark.unit
+def test_set_tags_no_op_for_same_tuple() -> None:
+    """Setting tags to the current tuple is a no-op."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(tags=("a", "b")))
+    received: list[str] = []
+    model.componentChanged.connect(received.append)
+
+    model.set_tags(new_id, ("a", "b"))
+
+    assert received == []
+
+
+@pytest.mark.unit
+def test_set_tags_raises_keyerror_for_unknown_id() -> None:
+    """Unknown component_id raises a plain `KeyError` carrying the id."""
+    model = WorkspaceModel()
+
+    with pytest.raises(KeyError) as exc_info:
+        model.set_tags("cmp_nonexistent", ("x",))
+
+    assert "cmp_nonexistent" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------- #
+# `set_annotations` (S1.3c.2b)
+# ---------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_set_annotations_replaces_dict_wholesale_and_emits() -> None:
+    """`set_annotations` replaces the dict wholesale and emits."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(annotations={"old": "value"}))
+    received: list[str] = []
+    model.componentChanged.connect(received.append)
+
+    model.set_annotations(new_id, {"new": "data"})
+
+    assert model.components[new_id].annotations == {"new": "data"}
+    assert received == [new_id]
+
+
+@pytest.mark.unit
+def test_set_annotations_replaces_not_merges() -> None:
+    """Wholesale replace: keys not in the new dict are dropped."""
+    model = WorkspaceModel()
+    new_id = model.add_component(
+        **_add_kwargs(annotations={"a": 1, "b": 2}),
+    )
+
+    model.set_annotations(new_id, {"c": 3})
+
+    # `a` and `b` are gone — replace, not merge.
+    assert model.components[new_id].annotations == {"c": 3}
+
+
+@pytest.mark.unit
+def test_set_annotations_no_op_for_identical_dict() -> None:
+    """Setting annotations to a structurally identical dict is a no-op."""
+    model = WorkspaceModel()
+    new_id = model.add_component(**_add_kwargs(annotations={"k": "v"}))
+    received: list[str] = []
+    model.componentChanged.connect(received.append)
+
+    model.set_annotations(new_id, {"k": "v"})
+
+    assert received == []
+
+
+@pytest.mark.unit
+def test_set_annotations_raises_keyerror_for_unknown_id() -> None:
+    """Unknown component_id raises a plain `KeyError` carrying the id."""
+    model = WorkspaceModel()
+
+    with pytest.raises(KeyError) as exc_info:
+        model.set_annotations("cmp_nonexistent", {"x": 1})
+
+    assert "cmp_nonexistent" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------- #
+# `add_connection` (S1.3c.2b)
+# ---------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_add_connection_inserts_and_returns_id() -> None:
+    """`add_connection` returns `con_<ULID>` and inserts the entry."""
+    model = WorkspaceModel()
+    a = model.add_component(**_add_kwargs())
+    b = model.add_component(**_add_kwargs())
+
+    new_id = model.add_connection(
+        source=PortRef(component_id=a, port_id="p"),
+        target=PortRef(component_id=b, port_id="p"),
+    )
+
+    assert isinstance(new_id, str)
+    assert new_id.startswith("con_")
+    assert _ULID_BODY_RE.match(new_id.removeprefix("con_"))
+    assert new_id in model.connections
+
+
+@pytest.mark.unit
+def test_add_connection_emits_connection_added_signal() -> None:
+    """`connectionAdded` fires with the new connection_id."""
+    model = WorkspaceModel()
+    a = model.add_component(**_add_kwargs())
+    b = model.add_component(**_add_kwargs())
+    received: list[str] = []
+    model.connectionAdded.connect(received.append)
+
+    new_id = model.add_connection(
+        source=PortRef(component_id=a, port_id="p"),
+        target=PortRef(component_id=b, port_id="p"),
+    )
+
+    assert received == [new_id]
+
+
+@pytest.mark.unit
+def test_add_connection_does_no_duplicate_check_at_raw_layer() -> None:
+    """Per docstring: raw mutation. Duplicate detection is the command
+    layer's job (validator chain, ADR-005 / 02 §14.3)."""
+    model = WorkspaceModel()
+    a = model.add_component(**_add_kwargs())
+    b = model.add_component(**_add_kwargs())
+
+    id_1 = model.add_connection(
+        source=PortRef(component_id=a, port_id="p"),
+        target=PortRef(component_id=b, port_id="p"),
+    )
+    id_2 = model.add_connection(
+        source=PortRef(component_id=a, port_id="p"),
+        target=PortRef(component_id=b, port_id="p"),
+    )
+
+    # Two distinct connections with different ULIDs; no duplicate check.
+    assert id_1 != id_2
+    assert id_1 in model.connections
+    assert id_2 in model.connections
+
+
+@pytest.mark.unit
+def test_add_connection_transitions_dirty_on_first_call() -> None:
+    """First connection edit transitions dirty `False → True` and emits."""
+    model = WorkspaceModel()
+    a = model.add_component(**_add_kwargs())
+    b = model.add_component(**_add_kwargs())
+    # Adding components already made the model dirty; reset transition
+    # state by counting only emissions from here on.
+    dirty_emissions: list[bool] = []
+    model.dirtyChanged.connect(dirty_emissions.append)
+
+    model.add_connection(
+        source=PortRef(component_id=a, port_id="p"),
+        target=PortRef(component_id=b, port_id="p"),
+    )
+
+    # Already dirty from add_component above; ADR-020 transition-only
+    # rule means no further emission.
+    assert dirty_emissions == []
+
+
+# ---------------------------------------------------------------------- #
+# `remove_connection` (S1.3c.2b)
+# ---------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_remove_connection_deletes_from_connections() -> None:
+    """`remove_connection` removes the entry from the internal store."""
+    model = WorkspaceModel()
+    a = model.add_component(**_add_kwargs())
+    b = model.add_component(**_add_kwargs())
+    conn_id = model.add_connection(
+        source=PortRef(component_id=a, port_id="p"),
+        target=PortRef(component_id=b, port_id="p"),
+    )
+    assert conn_id in model.connections
+
+    model.remove_connection(conn_id)
+
+    assert conn_id not in model.connections
+
+
+@pytest.mark.unit
+def test_remove_connection_emits_connection_removed_signal() -> None:
+    """`connectionRemoved` fires with the removed connection_id."""
+    model = WorkspaceModel()
+    a = model.add_component(**_add_kwargs())
+    b = model.add_component(**_add_kwargs())
+    conn_id = model.add_connection(
+        source=PortRef(component_id=a, port_id="p"),
+        target=PortRef(component_id=b, port_id="p"),
+    )
+    received: list[str] = []
+    model.connectionRemoved.connect(received.append)
+
+    model.remove_connection(conn_id)
+
+    assert received == [conn_id]
+
+
+@pytest.mark.unit
+def test_remove_connection_raises_keyerror_for_unknown_id() -> None:
+    """Unknown connection_id raises a plain `KeyError` carrying the id."""
+    model = WorkspaceModel()
+
+    with pytest.raises(KeyError) as exc_info:
+        model.remove_connection("con_nonexistent")
+
+    assert "con_nonexistent" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------- #
+# `update_connection` (S1.3c.2b)
+# ---------------------------------------------------------------------- #
+
+
+def _make_connection(model: WorkspaceModel) -> str:
+    """Helper: add two components plus a connection, return connection_id."""
+    a = model.add_component(**_add_kwargs())
+    b = model.add_component(**_add_kwargs())
+    return model.add_connection(
+        source=PortRef(component_id=a, port_id="p"),
+        target=PortRef(component_id=b, port_id="p"),
+    )
+
+
+@pytest.mark.unit
+def test_update_connection_changes_label() -> None:
+    """Setting a new label updates the label and emits."""
+    model = WorkspaceModel()
+    conn_id = _make_connection(model)
+    received: list[str] = []
+    model.connectionChanged.connect(received.append)
+
+    model.update_connection(conn_id, label="Power Trunk")
+
+    assert model.connections[conn_id].label == "Power Trunk"
+    assert received == [conn_id]
+
+
+@pytest.mark.unit
+def test_update_connection_changes_routing() -> None:
+    """Setting a new routing updates routing and emits."""
+    model = WorkspaceModel()
+    conn_id = _make_connection(model)
+    received: list[str] = []
+    model.connectionChanged.connect(received.append)
+
+    new_routing = ConnectionRouting(style="straight", waypoints=())
+    model.update_connection(conn_id, routing=new_routing)
+
+    assert model.connections[conn_id].routing == new_routing
+    assert received == [conn_id]
+
+
+@pytest.mark.unit
+def test_update_connection_changes_style() -> None:
+    """Setting a new style updates the style dict and emits."""
+    model = WorkspaceModel()
+    conn_id = _make_connection(model)
+    received: list[str] = []
+    model.connectionChanged.connect(received.append)
+
+    model.update_connection(conn_id, style={"color_override": "#ff0000"})
+
+    assert model.connections[conn_id].style == {"color_override": "#ff0000"}
+    assert received == [conn_id]
+
+
+@pytest.mark.unit
+def test_update_connection_multi_field_emits_single_signal() -> None:
+    """A combo update of label + routing emits exactly one
+    `connectionChanged`."""
+    model = WorkspaceModel()
+    conn_id = _make_connection(model)
+    received: list[str] = []
+    model.connectionChanged.connect(received.append)
+
+    model.update_connection(
+        conn_id,
+        label="Combined",
+        routing=ConnectionRouting(style="straight", waypoints=()),
+    )
+
+    assert len(received) == 1
+    assert model.connections[conn_id].label == "Combined"
+    assert model.connections[conn_id].routing.style == "straight"
+
+
+@pytest.mark.unit
+def test_update_connection_all_none_is_a_no_op() -> None:
+    """All-None call performs no mutation and emits no signal."""
+    model = WorkspaceModel()
+    conn_id = _make_connection(model)
+    received: list[str] = []
+    model.connectionChanged.connect(received.append)
+
+    model.update_connection(conn_id)
+
+    assert received == []
+
+
+@pytest.mark.unit
+def test_update_connection_raises_keyerror_for_unknown_id() -> None:
+    """Unknown connection_id raises a plain `KeyError` carrying the id."""
+    model = WorkspaceModel()
+
+    with pytest.raises(KeyError) as exc_info:
+        model.update_connection("con_nonexistent", label="X")
+
+    assert "con_nonexistent" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------- #

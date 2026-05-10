@@ -21,26 +21,33 @@ Phase 1 build order within S1.3:
 * S1.3c.1: 12 fine-grained signals (ADR-018) + `add_component` /
   `remove_component` / `move_component` mutation methods +
   transition-only `_set_dirty()` helper.
-* S1.3c.2a (this commit): `ComponentInstance.rotation` schema fix
-  (`int → float` per ADR-018), shared `_canonical_rotation` helper
-  that validates + snaps sub-ε drift to canonical Phase-1 angles,
-  rotation validation on `add_component`, and the `rotate_component`
-  mutation method with ε no-op suppression. Storage and signal
-  payloads carry canonical angles, not caller drift.
-* S1.3c.2b: connection mutations, parameter and property setters.
+* S1.3c.2a: `ComponentInstance.rotation` schema fix (`int → float`
+  per ADR-018), shared `_canonical_rotation` helper, rotation
+  validation on `add_component`, and the `rotate_component` mutation
+  method.
+* S1.3c.2b (this commit): five component property setters
+  (`set_parameter`, `set_custom_label`, `set_locked`, `set_tags`,
+  `set_annotations`) and three connection mutations (`add_connection`,
+  `remove_connection`, `update_connection`). Per `02 §11.4 Field
+  Mutability Matrix`, `metadata` and `extensions` have no public
+  setter in Phase 1 (forward-compatibility containers, write path
+  via `_build_*` and `from_dict` only).
 * S1.3d: `batch()` context manager + `WorkspaceChangeSet` + 13th
   signal `modelChanged`.
 * S1.3e: `reset()` + `modelReset()` signal + `_clear_dirty()`.
 
 Validation order in mutation methods (consistent across S1.3c.x):
 
-1. Argument validation (e.g., `_canonical_rotation`) — raises early
-   on bad inputs, leaves model state untouched.
+1. Argument validation / canonicalization (e.g., `_canonical_rotation`,
+   `str.strip()`) — raises early on bad inputs, leaves model state
+   untouched.
 2. Existence check (e.g., `component_id` in `_components`) — raises
    `KeyError` if the target is missing.
-3. No-op suppression via ε-tolerance helpers — returns silently if
-   the call would not change state.
-4. Mutation + `_set_dirty()` + signal emission.
+3. No-op suppression via ε-tolerance helpers or exact `==` — returns
+   silently if the call would not change state.
+4. Mutation + `_set_dirty()` + signal emission. `modified_at` is
+   bumped on real mutations only; no-ops do NOT bump it (see ADR-020
+   §"No-op suppression").
 
 A call with both an invalid argument and a missing id raises the
 argument error first (step 1), not the missing-id error (step 2).
@@ -50,11 +57,13 @@ resource lookup.
 References:
 ----------
 * `decisions/ADR-003-workspace-ui-data-separation.md`
+* `decisions/ADR-005-command-stack-qundostack.md`
 * `decisions/ADR-018-signal-payload-contracts.md`
 * `decisions/ADR-019-batch-mutation-and-changeset.md`
 * `decisions/ADR-020-dirty-tracking-semantics.md`
 * `specs/02_workspace_requirements.md` §3 (Source of Truth), §4 (Signals),
-  §22 / §23 (Phase-1 rotation quantization)
+  §11.4 (Field Mutability Matrix), §22 / §23 (Phase-1 rotation
+  quantization), §14 (Connection System)
 * `specs/06_data_flow_and_architecture.md` §4.2
 """
 
@@ -108,12 +117,14 @@ class WorkspaceModel(QObject):
     * S1.3c.1: `add_component`, `remove_component`, `move_component`
       plus the 12 fine-grained signal definitions and the
       transition-only `_set_dirty()` helper.
-    * S1.3c.2a (current): `rotate_component` plus rotation validation
-      on `add_component`. `ComponentInstance.rotation` is now `float`
-      per ADR-018. Sub-ε drift around the Phase-1 valid angles is
-      snapped to the canonical value before storage.
-    * S1.3c.2b (next): connection mutations, parameter and property
-      setters.
+    * S1.3c.2a: `rotate_component` plus rotation validation /
+      canonicalization on `add_component`.
+    * S1.3c.2b (current): `set_parameter`, `set_custom_label`,
+      `set_locked`, `set_tags`, `set_annotations` for component
+      property edits; `add_connection`, `remove_connection`,
+      `update_connection` for connection lifecycle and content edits.
+      Per `02 §11.4`, `metadata` and `extensions` have no public
+      setter in Phase 1.
     * S1.3d (later): `batch()` context manager and `modelChanged`.
     * S1.3e (last): `reset()` and `_clear_dirty()`.
 
@@ -139,7 +150,8 @@ class WorkspaceModel(QObject):
         dirtyChanged(is_dirty: bool)
 
     See Also:
-        `02 §3`, `02 §4`, ADR-003, ADR-018, ADR-019, ADR-020.
+        `02 §3`, `02 §4`, `02 §11.4`, ADR-003, ADR-018, ADR-019,
+        ADR-020.
     """
 
     # ------------------------------------------------------------------ #
@@ -250,15 +262,18 @@ class WorkspaceModel(QObject):
 
         `position` is taken as a `QPointF` to match the signal contract
         (ADR-018) and stored internally as a `tuple[float, float]` to
-        match `ComponentInstance.position`. The conversion happens at
-        this boundary.
+        match `ComponentInstance.position`.
 
         `rotation` is validated and canonicalized via
         `_canonical_rotation` before any mutation. Sub-ε drift around
-        the Phase-1 valid angles is snapped to the canonical value, so
-        storage remains exact; downstream code can compare rotations
-        with `==`. Invalid values raise `ValueError` and the model
-        state remains unchanged.
+        the Phase-1 valid angles is snapped to the canonical value.
+        Invalid values raise `ValueError` and the model state remains
+        unchanged.
+
+        `metadata` and `extensions` parameters here populate the new
+        instance only; per `02 §11.4` they have no public *setter* in
+        Phase 1 and cannot be mutated after creation through
+        `WorkspaceModel`.
 
         Args:
             definition_id: Dotted identifier of the source component
@@ -279,8 +294,10 @@ class WorkspaceModel(QObject):
             locked: Initial locked state.
             tags: Tuple of free-form tags.
             annotations: Optional annotations mapping. Copied.
-            metadata: Optional metadata mapping. Copied.
-            extensions: Optional extensions mapping. Copied.
+            metadata: Optional metadata mapping. Copied. Internal
+                container per `02 §11.4`; no public setter.
+            extensions: Optional extensions mapping. Copied. Internal
+                container per `02 §11.4`; no public setter.
 
         Returns:
             Internal `component_id` (`cmp_<ULID>`) of the new component.
@@ -378,28 +395,17 @@ class WorkspaceModel(QObject):
         Phase-1 quantization rule (`02 §22`/`§23`) is enforced at the
         mutation API layer: `new_rotation` must be approximately equal
         (within ε) to one of `{0.0, 90.0, 180.0, 270.0}`. Sub-ε drift
-        around those values (e.g., `math.degrees(math.pi / 2)`
-        ≈ 90.0000…) is **snapped to the canonical exact angle** so
-        that storage stays canonical and downstream comparisons can
-        use `==`.
+        around those values is **snapped to the canonical exact angle**
+        so storage stays canonical and downstream comparisons can use
+        `==`.
 
         Validation order: `new_rotation` is validated and canonicalized
-        before the component existence check. A call like
-        `rotate_component("missing_id", 45.0)` raises `ValueError`,
-        not `KeyError`. This order reflects the class-level rule that
-        argument validation precedes resource lookup (see the module
+        before the component existence check (see the module
         docstring §"Validation order in mutation methods").
 
-        Applies ε=1e-6 no-op suppression per ADR-020: if the canonical
-        new rotation is approximately equal to the current rotation
-        (which is already canonical from any prior write), the call
-        is a no-op — no signal, no dirty change, no `modified_at`
-        bump.
-
-        On a real rotation, `componentRotated(id, old, new)` is
-        emitted with both endpoints as `float` per ADR-018. The
-        emitted `new` is the canonical angle, not the caller's
-        drifted input.
+        Applies ε=1e-6 no-op suppression per ADR-020. On a real
+        rotation, `componentRotated(id, old, new_canonical)` is emitted
+        with both endpoints as `float` per ADR-018.
 
         Args:
             component_id: Internal `cmp_<ULID>` identifier.
@@ -427,6 +433,351 @@ class WorkspaceModel(QObject):
         self._components[component_id] = new_instance
         self._set_dirty()
         self.componentRotated.emit(component_id, old_rotation, canonical)
+
+    def set_parameter(
+        self,
+        component_id: str,
+        param_name: str,
+        value: Any,
+    ) -> None:
+        """Set or upsert a parameter value on a component.
+
+        Phase 1 behavior: **upsert**. If `param_name` is not already
+        in the component's parameters dict, it is added; otherwise it
+        is overwritten. ParameterSchemaRegistry (S1.B) and
+        parameter-schema-dispatched equality (S1.6) are not yet
+        implemented.
+
+        TODO(S1.6): After parameter schema dispatch lands:
+            - reject param names not declared in the component
+              definition (raise `KeyError` or `ValueError`);
+            - dispatch equality per parameter type (float uses
+              ε-tolerance per ADR-020, others use exact `==`).
+
+        Until then, upsert + exact `==` no-op suppression is the stub.
+
+        On a real edit, emits `componentChanged(component_id)` (the
+        ADR-018 catch-all for parameter / label / tag / lock /
+        annotation edits) and bumps `modified_at`.
+
+        Args:
+            component_id: Internal `cmp_<ULID>` identifier.
+            param_name: Parameter identifier as declared in the
+                component definition.
+            value: New parameter value.
+
+        Raises:
+            KeyError: If `component_id` is not present in the
+                workspace.
+        """
+        current = self._components.get(component_id)
+        if current is None:
+            raise KeyError(component_id)
+        # Phase-1 stub: exact `==` no-op suppression. Replaced in S1.6
+        # by parameter-schema-dispatched equality (float → ε-tolerance,
+        # others → exact ==).
+        if param_name in current.parameters and current.parameters[param_name] == value:
+            return
+        new_parameters = dict(current.parameters)
+        new_parameters[param_name] = value
+        new_instance = replace(
+            current,
+            parameters=new_parameters,
+            modified_at=_now_iso8601(),
+        )
+        self._components[component_id] = new_instance
+        self._set_dirty()
+        self.componentChanged.emit(component_id)
+
+    def set_custom_label(self, component_id: str, new_label: str) -> None:
+        """Set the custom (user-editable) label on a component.
+
+        The label is normalized via `str.strip()` before comparison
+        and storage; trailing or leading whitespace is not part of
+        the canonical label. This prevents phantom `componentChanged`
+        emissions and dirty transitions from typing whitespace that
+        the user perceives as unchanged. To clear the label, pass an
+        empty string (or any whitespace-only string — both canonicalize
+        to "").
+
+        Validation order:
+            1. Argument normalization (here: `strip()`).
+            2. Existence check.
+            3. No-op suppression (canonical-vs-canonical comparison).
+            4. Mutation + `componentChanged` emission.
+
+        Args:
+            component_id: Internal `cmp_<ULID>` identifier.
+            new_label: New label text. Whitespace-trimmed before
+                storage.
+
+        Raises:
+            KeyError: If `component_id` is not present in the
+                workspace.
+        """
+        canonical_label = new_label.strip()
+        current = self._components.get(component_id)
+        if current is None:
+            raise KeyError(component_id)
+        if current.custom_label == canonical_label:
+            return
+        new_instance = replace(
+            current,
+            custom_label=canonical_label,
+            modified_at=_now_iso8601(),
+        )
+        self._components[component_id] = new_instance
+        self._set_dirty()
+        self.componentChanged.emit(component_id)
+
+    def set_locked(self, component_id: str, locked: bool) -> None:
+        """Set the locked flag on a component.
+
+        Locked components are protected from accidental edits per
+        `02 §38`. This raw mutation simply flips the flag; lock-aware
+        editing rules (e.g., refusing move on a locked component) are
+        enforced at the command layer (S1.7).
+
+        Args:
+            component_id: Internal `cmp_<ULID>` identifier.
+            locked: New locked state.
+
+        Raises:
+            KeyError: If `component_id` is not present in the
+                workspace.
+        """
+        current = self._components.get(component_id)
+        if current is None:
+            raise KeyError(component_id)
+        if current.locked == locked:
+            return
+        new_instance = replace(
+            current,
+            locked=locked,
+            modified_at=_now_iso8601(),
+        )
+        self._components[component_id] = new_instance
+        self._set_dirty()
+        self.componentChanged.emit(component_id)
+
+    def set_tags(
+        self,
+        component_id: str,
+        new_tags: tuple[str, ...],
+    ) -> None:
+        """Set the tags tuple on a component (replaces wholesale).
+
+        Tags are stored as a tuple to align with
+        `ComponentInstance.tags`. Mypy strict will reject lists or
+        other sequences; callers must pass a tuple. Empty tuple
+        clears all tags.
+
+        Args:
+            component_id: Internal `cmp_<ULID>` identifier.
+            new_tags: New tags tuple. Replaces the current tuple
+                wholesale.
+
+        Raises:
+            KeyError: If `component_id` is not present in the
+                workspace.
+        """
+        current = self._components.get(component_id)
+        if current is None:
+            raise KeyError(component_id)
+        if current.tags == new_tags:
+            return
+        new_instance = replace(
+            current,
+            tags=new_tags,
+            modified_at=_now_iso8601(),
+        )
+        self._components[component_id] = new_instance
+        self._set_dirty()
+        self.componentChanged.emit(component_id)
+
+    def set_annotations(
+        self,
+        component_id: str,
+        new_annotations: Mapping[str, Any],
+    ) -> None:
+        """Set the annotations dict on a component (replaces wholesale).
+
+        Per `02 §11.4`, `set_*` methods replace the field wholesale.
+        To merge, callers must read-merge-write at the call site, or
+        use a future `update_annotations` method. The wholesale
+        semantics are intentional and documented to avoid silent
+        data loss when nested dicts are involved.
+
+        The input mapping is copied to insulate callers from later
+        mutations.
+
+        Args:
+            component_id: Internal `cmp_<ULID>` identifier.
+            new_annotations: New annotations mapping. Replaces the
+                current dict wholesale.
+
+        Raises:
+            KeyError: If `component_id` is not present in the
+                workspace.
+        """
+        current = self._components.get(component_id)
+        if current is None:
+            raise KeyError(component_id)
+        canonical_annotations = dict(new_annotations)
+        if current.annotations == canonical_annotations:
+            return
+        new_instance = replace(
+            current,
+            annotations=canonical_annotations,
+            modified_at=_now_iso8601(),
+        )
+        self._components[component_id] = new_instance
+        self._set_dirty()
+        self.componentChanged.emit(component_id)
+
+    # ------------------------------------------------------------------ #
+    # Public mutation API — connections
+    # ------------------------------------------------------------------ #
+
+    def add_connection(
+        self,
+        *,
+        source: PortRef,
+        target: PortRef,
+        routing: ConnectionRouting | None = None,
+        label: str = "",
+        style: Mapping[str, Any] | None = None,
+    ) -> str:
+        """Add a connection between two component ports and return its id.
+
+        This is a **low-level raw mutation**. It does NOT perform
+        validation: no duplicate detection, no domain compatibility
+        check, no self-connection rejection, no port-existence check.
+        All such validation is the responsibility of higher layers:
+
+        * **Primary defense (S1.7 command layer):** the
+          `AddConnectionCommand` runs the connection validator
+          (`02 §20.1`) before invoking this method. If validation
+          fails, this method is never called. This is the path all
+          UI-initiated edits take per ADR-005.
+        * **Secondary defense (S1.4 incremental validator):** runs
+          after mutations as a safety net for bypass or corrupt-load
+          scenarios. Not the primary check.
+
+        Duplicate detection per `02 §14.3`: a connection between the
+        same two ports is a duplicate (commutatively — A→B and B→A
+        are the same connection). The command-layer validator uses
+        `frozenset({(source.component_id, source.port_id),
+        (target.component_id, target.port_id)})` for comparison. This
+        raw method does no such check; calling it twice with the same
+        ports produces two distinct connections with different ULIDs.
+
+        `metadata` and `extensions` cannot be supplied through the
+        public API; per `02 §11.4` they are internal / round-trip
+        only and are populated as empty dicts.
+
+        Args:
+            source: Endpoint reference at the source side
+                (`(component_id, port_id)`).
+            target: Endpoint reference at the target side.
+            routing: Optional routing specification. Defaults to
+                `ConnectionRouting()` (orthogonal style, empty
+                waypoints).
+            label: Optional wire label. Defaults to "".
+            style: Optional visual style overrides per `02 §39`.
+                Copied. Defaults to empty dict.
+
+        Returns:
+            Internal `connection_id` (`con_<ULID>`) of the new
+            connection.
+        """
+        connection = self._build_connection(
+            source=source,
+            target=target,
+            routing=routing,
+            label=label,
+            style=style,
+        )
+        self._connections[connection.id] = connection
+        self._set_dirty()
+        self.connectionAdded.emit(connection.id)
+        return connection.id
+
+    def remove_connection(self, connection_id: str) -> None:
+        """Remove a connection from the workspace.
+
+        Args:
+            connection_id: Internal `con_<ULID>` identifier.
+
+        Raises:
+            KeyError: If `connection_id` is not present in the
+                workspace. Command-layer wrappers (S1.7) are expected
+                to translate this into a domain error before
+                surfacing it to the UI; see ADR-005 and the error
+                catalog in `specs/11_error_code_catalog.md`.
+        """
+        if connection_id not in self._connections:
+            raise KeyError(connection_id)
+        del self._connections[connection_id]
+        self._set_dirty()
+        self.connectionRemoved.emit(connection_id)
+
+    def update_connection(
+        self,
+        connection_id: str,
+        *,
+        label: str | None = None,
+        routing: ConnectionRouting | None = None,
+        style: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Update one or more user-editable fields on a connection.
+
+        Combo updater: each keyword argument is optional; `None`
+        means "leave this field unchanged". To clear `label`, pass
+        an empty string. To clear `style`, pass an empty mapping.
+        (`None` cannot be used as "clear" because it overlaps with
+        the "unchanged" sentinel.)
+
+        Per `02 §11.4`, this method does not modify `source` or
+        `target`. Endpoint re-targeting (`02 §37`) is a future
+        command-layer feature delivered via `ModifyConnectionCommand`.
+
+        No-op suppression: if every keyword argument is `None`, the
+        call is a no-op (no signal, no dirty change). Per-field
+        no-op detection is intentionally **not** performed at this
+        layer; if any argument is non-`None`, the connection is
+        considered changed and `connectionChanged(connection_id)` is
+        emitted exactly once.
+
+        Args:
+            connection_id: Internal `con_<ULID>` identifier.
+            label: New label, or `None` to leave unchanged.
+            routing: New `ConnectionRouting`, or `None` to leave
+                unchanged.
+            style: New style mapping (copied), or `None` to leave
+                unchanged.
+
+        Raises:
+            KeyError: If `connection_id` is not present in the
+                workspace.
+        """
+        current = self._connections.get(connection_id)
+        if current is None:
+            raise KeyError(connection_id)
+        if label is None and routing is None and style is None:
+            return
+        new_label = label if label is not None else current.label
+        new_routing = routing if routing is not None else current.routing
+        new_style = dict(style) if style is not None else current.style
+        new_instance = replace(
+            current,
+            label=new_label,
+            routing=new_routing,
+            style=new_style,
+        )
+        self._connections[connection_id] = new_instance
+        self._set_dirty()
+        self.connectionChanged.emit(connection_id)
 
     # ------------------------------------------------------------------ #
     # Internal builders
@@ -474,12 +825,10 @@ class WorkspaceModel(QObject):
 
         Args:
             definition_id: Dotted identifier of the source component
-                definition (e.g.,
-                `"electrical.analog.components.resistor"`).
+                definition.
             type: Definition type label used for display.
             display_name: Human-readable definition name.
-            domain: Physical domain identifier (e.g.,
-                `"electrical_analog"`).
+            domain: Physical domain identifier.
             category: Library category from the definition.
             position: Scene-coordinate `(x, y)` of the component
                 anchor.
@@ -489,8 +838,7 @@ class WorkspaceModel(QObject):
                 "".
             rotation: Rotation in degrees; assumed already
                 canonicalized by the caller. Defaults to 0.0.
-            parameters: Optional parameter mapping. Copied to insulate
-                callers from later mutations. Defaults to empty.
+            parameters: Optional parameter mapping. Copied.
             locked: Initial locked state. Defaults to False.
             tags: Tuple of free-form tags.
             annotations: Optional annotations mapping. Copied.
@@ -542,7 +890,7 @@ class WorkspaceModel(QObject):
         Generates the internal ULID (`con_…`) and the next monotonic
         global display ID (`conn_<n>`). The returned instance is
         **not** added to `_connections`; the caller (public
-        `add_connection`, S1.3c.2b) is responsible for insertion.
+        `add_connection`) is responsible for insertion.
 
         Args:
             source: Endpoint reference at the source side.
@@ -552,7 +900,7 @@ class WorkspaceModel(QObject):
                 waypoints).
             label: Optional wire label. Defaults to "".
             style: Optional visual style overrides per `02 §39`.
-                Copied to insulate callers from later mutations.
+                Copied.
             metadata: Optional metadata mapping. Copied.
             extensions: Optional extensions mapping. Copied.
 
@@ -599,14 +947,12 @@ def _canonical_rotation(rotation: float) -> float:
     Per ADR-018 the signal payload type is `float`, but the Phase-1
     quantization rule from `02 §22`/`§23` restricts valid values to
     `{0.0, 90.0, 180.0, 270.0}`. This helper enforces that rule and
-    **snaps sub-ε drift** (e.g., `math.degrees(math.pi / 2)`
-    ≈ 90.0000…) to the canonical valid angle, so internal storage
-    stays exact and downstream comparisons can use `==`.
+    **snaps sub-ε drift** to the canonical valid angle, so internal
+    storage stays exact and downstream comparisons can use `==`.
 
-    Used by both `add_component` (rotation parameter validation) and
-    `rotate_component` (target angle validation). Both methods store
-    the returned canonical value, not the caller's drifted input, and
-    the signal payload also carries the canonical value.
+    Used by both `add_component` and `rotate_component`. Both methods
+    store the returned canonical value, not the caller's drifted
+    input, and the signal payload also carries the canonical value.
 
     Subscribers receive `float` payloads but must not hard-code
     membership in the closed `{0.0, 90.0, 180.0, 270.0}` set —
