@@ -801,12 +801,72 @@ class WorkspaceModel(QObject):
         param_name: str,
         value: Any,
     ) -> None:
-        """Set or upsert a parameter value (TODO(S1.6) for schema dispatch)."""
+        """Set or upsert a parameter value with schema-dispatched no-op rule.
+
+        S1.B.1e closes the TODO(S1.6) marker: the per-type no-op
+        suppression now consults the `ComponentRegistry` (wired at
+        `WorkspaceModel(registry=...)` time per S1.B.1d) to discover
+        the parameter's declared type and dispatch the equality check
+        accordingly:
+
+        * `float` parameters: ε-tolerance equality (`approx_equal_float`)
+          per ADR-020. Suppresses spurious `componentChanged`
+          emissions from sub-ε numeric drift (e.g., a slider that
+          re-emits a slightly different float each tick).
+        * `int`, `bool`, `string`, `enum`, `expression` parameters:
+          exact `==`. These types are discrete or syntactic; sub-ε
+          tolerance does not apply.
+
+        When the registry cannot resolve the type — no registry
+        wired, the component's `definition_id` is not registered, or
+        the parameter is not declared in the definition — the method
+        falls back to exact `==`. This keeps backwards compatibility
+        with the pre-S1.B.1d code path (used by all existing S1.3
+        tests, which construct `WorkspaceModel()` without a registry)
+        and avoids changing semantics for parameters that the
+        registry cannot describe.
+
+        Insertion semantics: when `param_name` is not present on the
+        instance, this method always inserts (no comparison runs).
+        Parameter-id validation against the definition schema (i.e.,
+        rejecting parameters that the definition does not declare) is
+        not enforced here — that is the Phase 1.5+ command-stack
+        layer's responsibility and would break the upsert-friendly
+        contract used by project-load and copy/paste flows.
+
+        Validation order (consistent with `add_component`,
+        `add_component_from_definition`, etc., `02 §3`/`§4`):
+
+        1. Existence check (`KeyError` if `component_id` is missing).
+        2. Schema lookup (best-effort; None falls back to `==`).
+        3. No-op suppression by dispatched equality.
+        4. Mutation + `_set_dirty()` + signal emission (or batch
+           record).
+
+        Args:
+            component_id: Target component instance id.
+            param_name: Parameter id (matches `ParameterDefinition.id`
+                when registered).
+            value: New value; type is the caller's responsibility.
+                Value-level validation against `ParameterDefinition`
+                bounds / enum / unit is the command-stack layer's
+                responsibility (Phase 1.5+).
+
+        Raises:
+            KeyError: `component_id` is unknown.
+
+        See Also:
+            `02 §11.4` (Field Mutability Matrix), ADR-020 (ε no-op),
+            ADR-021 (registry-backed parameter discovery).
+        """
         current = self._components.get(component_id)
         if current is None:
             raise KeyError(component_id)
-        if param_name in current.parameters and current.parameters[param_name] == value:
-            return
+        if param_name in current.parameters:
+            existing = current.parameters[param_name]
+            param_type = self._lookup_parameter_type(current.definition_id, param_name)
+            if _parameter_values_equal(existing, value, param_type):
+                return
         new_parameters = dict(current.parameters)
         new_parameters[param_name] = value
         new_instance = replace(
@@ -820,6 +880,35 @@ class WorkspaceModel(QObject):
             self._batch_builder.record_component_changed(component_id)
         else:
             self.componentChanged.emit(component_id)
+
+    def _lookup_parameter_type(
+        self,
+        definition_id: str,
+        param_id: str,
+    ) -> str | None:
+        """Return the declared `ParameterType`, or None if unresolvable.
+
+        Resolution order (any miss returns `None`):
+
+        1. A `ComponentRegistry` must be wired at construction.
+        2. `definition_id` must be registered.
+        3. `param_id` must be declared on that definition.
+
+        `None` callers treat as "use exact `==`" so that the pre-
+        S1.B.1d code path (no registry) stays semantically identical
+        and parameters that are not in the definition schema (e.g.,
+        legacy upserts, future user-defined extra params) keep their
+        upsert-friendly behavior.
+        """
+        if self._registry is None:
+            return None
+        if not self._registry.has(definition_id):
+            return None
+        definition = self._registry.get(definition_id)
+        for param_def in definition.parameters:
+            if param_def.id == param_id:
+                return param_def.type
+        return None
 
     def set_custom_label(self, component_id: str, new_label: str) -> None:
         """Set the custom label; whitespace strip canonicalization."""
@@ -1111,6 +1200,48 @@ def _canonical_rotation(rotation: float) -> float:
         if approx_equal_float(rotation, valid):
             return valid
     raise ValueError(f"rotation must be one of {_VALID_ROTATIONS}, got {rotation}")
+
+
+def _parameter_values_equal(
+    existing: Any,
+    value: Any,
+    param_type: str | None,
+) -> bool:
+    """Type-dispatched parameter equality for `set_parameter` no-op suppression.
+
+    Float parameters use ε-tolerance per ADR-020 to suppress spurious
+    `componentChanged` emissions from sub-ε numeric drift. All other
+    declared types (`int`, `bool`, `string`, `enum`, `expression`)
+    and the `None` "unknown / unregistered" sentinel fall back to
+    exact `==` so the pre-S1.B.1d behavior is preserved when the
+    registry cannot resolve the parameter type.
+
+    The ε-tolerance branch only fires when both sides are numeric
+    (`int` or `float`). This guards against bool-vs-float traps and
+    unexpected non-numeric values flowing through a parameter declared
+    as `float` — in those edge cases we conservatively fall back to
+    `==` so the mutation path (and any downstream validator) still
+    runs.
+
+    Args:
+        existing: The value currently stored on the instance.
+        value: The candidate new value.
+        param_type: Declared `ParameterType` per `01 §6`, or `None`
+            when the registry cannot resolve the parameter.
+
+    Returns:
+        `True` if the values should be treated as equal (no-op
+        suppression fires); `False` otherwise (mutation proceeds).
+    """
+    if (
+        param_type == "float"
+        and not isinstance(existing, bool)
+        and not isinstance(value, bool)
+        and isinstance(existing, int | float)
+        and isinstance(value, int | float)
+    ):
+        return approx_equal_float(float(existing), float(value))
+    return bool(existing == value)
 
 
 def _now_iso8601() -> str:
