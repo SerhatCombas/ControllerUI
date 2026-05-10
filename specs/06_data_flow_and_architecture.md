@@ -525,26 +525,44 @@ Phase 1 may load definitions from packaged JSON/Python definitions. User-extensi
 
 ### 5.3 shared/graph
 
-Defines graph structures independent from UI.
+Defines derived graph structures independent from UI. The shared
+layer carries only the cross-feature read-only types that
+`ControllerDesignModule` may need to consume; canonical workspace
+storage and validation logic live in
+`features/SystemModelingModule/model/` per §4.2. The boundary is
+enforced by `tests/architecture/test_module_boundaries.py`: `shared/`
+must not import `features/`, so any class that depends on
+`ValidationReport`, `WorkspaceModel`, or other workspace-private
+types belongs in `features/SystemModelingModule/`.
 
 Contains:
 
-* `WorkspaceModel`
-* `SystemGraph`
-* `GraphAssembler`
-* `GraphValidator`
-* `Connection`
-* `PortRef`
-* `ImplicitNode`
-* `ValidationReport`
+* `SystemGraph` — frozen snapshot of the assembled graph
+  (components, ports, connections, implicit nodes, validation
+  metadata). Populated by `GraphAssembler` (owned by
+  `features/SystemModelingModule/` per §4.2).
+* `ImplicitNode` — graph-node value type per §17 / §18.
+* `PortRef` — vertex reference value type
+  (`(component_id, port_id)`).
 
 Responsibilities:
 
-* store workspace model data
-* assemble graph from components and connections
-* compute implicit nodes
-* validate graph-level consistency
-* expose graph snapshots for future equation extraction
+* hold the assembled graph as a frozen snapshot
+* expose graph snapshots for cross-feature read-only consumption
+  (e.g., `ControllerDesignModule` reads `SystemGraph` for
+  state-space preparation in Phase 2+)
+
+Owned elsewhere (in `features/SystemModelingModule/model/` per §4.2):
+
+* `WorkspaceModel` — source of truth for components, connections,
+  selection, validation state, dirty flag
+* `Connection` — workspace data record (uses `PortRef` from this
+  package)
+* `GraphAssembler` — produces `SystemGraph` from `WorkspaceModel`
+* `GraphValidator` — pre-mutation validation; returns
+  `ValidationReport`
+* `ValidationReport` — workspace validation result (consumed by UI
+  panels per `02 §32.3`)
 
 ### 5.4 shared/probes
 
