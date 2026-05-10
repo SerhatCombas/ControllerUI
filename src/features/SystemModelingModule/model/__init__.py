@@ -8,29 +8,67 @@ module. It must not import Qt UI modules; it may use `QObject` and
 `Signal` from `PySide6.QtCore` for change notification but must
 remain testable without instantiating any QWidget.
 
-Phase 1 contents (planned, populated during Stage S1):
+Phase 1 contents (populated incrementally during Stage S1):
 
-* WorkspaceModel — source of truth for components, connections, validation
-* ComponentInstance — component placement dataclass
-* Connection — connection between component ports
-* SelectionModel — current selection state
-* WorkspaceIdGenerator — ULID + display ID generation
-* ValidationReport — structured validation issues
-* migrations/ — schema migration registry
+* ComponentInstance — placed-component dataclass (S1.1)
+* Connection — wire dataclass between component ports (S1.1)
+* WorkspaceIdGenerator — ULID + display ID generation (S1.1)
+* ValidationReport — structured validation issues (S1.2)
+* SelectionModel — current selection state (S1.2)
+* WorkspaceModel — source of truth (planned, S1.3)
+* migrations/ — schema migration registry (planned)
 
-References
+References:
 ----------
 * ADR-003: Workspace UI/Data Separation (`decisions/ADR-003-workspace-ui-data-separation.md`)
 * `specs/02_workspace_requirements.md`
 * `specs/06_data_flow_and_architecture.md` §4.2
 """
 
-# Public API will be re-exported here as the package is populated:
-# from .workspace_model import WorkspaceModel
-# from .component_instance import ComponentInstance
-# from .connection import Connection
-# from .selection_model import SelectionModel
-# from .id_generator import WorkspaceIdGenerator
-# from .validation_report import ValidationReport, ValidationSeverity
+from .component_instance import (
+    BoundaryKind,
+    ComponentInstance,
+    MotionKind,
+    PhysicalAttributes,
+    SourceKind,
+    VisualSpec,
+)
+from .connection import (
+    Connection,
+    ConnectionRouting,
+    PortRef,
+    RoutingStyle,
+    Waypoint,
+)
+from .id_generator import WorkspaceIdGenerator
+from .selection_model import SelectionModel, SelectionSnapshot
+from .validation_report import (
+    SubjectKind,
+    ValidationIssue,
+    ValidationReport,
+    ValidationSeverity,
+)
 
-__all__: list[str] = []
+# WorkspaceModel will be re-exported here once S1.3 lands:
+# from .workspace_model import WorkspaceModel
+
+__all__ = [
+    "BoundaryKind",
+    "ComponentInstance",
+    "Connection",
+    "ConnectionRouting",
+    "MotionKind",
+    "PhysicalAttributes",
+    "PortRef",
+    "RoutingStyle",
+    "SelectionModel",
+    "SelectionSnapshot",
+    "SourceKind",
+    "SubjectKind",
+    "ValidationIssue",
+    "ValidationReport",
+    "ValidationSeverity",
+    "VisualSpec",
+    "Waypoint",
+    "WorkspaceIdGenerator",
+]
