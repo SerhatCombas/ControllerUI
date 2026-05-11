@@ -105,6 +105,7 @@ Current non-ADR documents in this folder:
 |---|---|
 | `2026-05-05_s3-s5-handoff-design.md` | S3 to S5 handoff design (architecture test invariants) |
 | `2026-05-10_pyside6-signal-exception-dispatch.md` | PySide6 signal exception dispatch finding (S1.3d follow-up) |
+| `2026-05-11_command-layer-qtgui-exemption.md` | Command-layer QtGui exemption finding (S1.7.1 follow-up) |
 
 ## Naming Convention
 
