@@ -12,28 +12,47 @@ classes. Importing `QObject`, `QPointF`, and `Signal` from
 cross-layer interface (ADR-003) and `QPointF` is the canonical
 scene-coordinate type (ADR-018 signal payload table).
 
-Phase 1 build order within S1.3:
+Phase 1 build order:
+
+S1.3 — core mutation API:
 
 * S1.3a: skeleton — constructor, internal stores, dirty flag,
   read-only views, internal builders.
 * S1.3b: ε-tolerance equality helpers in sibling module `equality.py`.
 * S1.3c.1: 12 fine-grained signals (ADR-018) + `add_component` /
-  `remove_component` / `move_component` mutation methods +
-  transition-only `_set_dirty()` helper.
-* S1.3c.2a: `ComponentInstance.rotation` schema fix (`int → float`),
-  `_canonical_rotation` helper, `rotate_component`.
-* S1.3c.2b: five component property setters and three connection
+  `remove_component` / `move_component` + transition-only
+  `_set_dirty()`.
+* S1.3c.2a: rotation schema fix, `_canonical_rotation`,
+  `rotate_component`.
+* S1.3c.2b: five component property setters + three connection
   mutations.
-* S1.3d: `batch()` context manager + 13th signal
-  `modelChanged(WorkspaceChangeSet)` per ADR-019 + minimal `reset()`
-  with batch interaction. Mutation methods became batch-aware.
-* S1.3e (this commit): `_clear_dirty()` private helper, symmetric
-  to `_set_dirty()` (ADR-020 transition-only rule). `reset()` is
-  refactored to delegate dirty-clearing to the helper rather than
-  setting `self._dirty = False` directly. Per Yorum A, `reset()`
-  re-creates the `WorkspaceIdGenerator`, so the next component
-  added after a reset receives a display ID counter starting from
-  `1` again (blank-slate semantics).
+* S1.3d: `batch()` + `modelChanged(WorkspaceChangeSet)` (ADR-019),
+  minimal `reset()` with batch interaction.
+* S1.3e: `_clear_dirty()` symmetric to `_set_dirty()`. `reset()`
+  re-creates the `WorkspaceIdGenerator` (blank-slate semantics).
+
+S1.B — registry and parameter schema:
+
+* S1.B.1d: optional `registry: ComponentRegistry` constructor arg
+  + `add_component_from_definition` + `registry` read-only
+  property (used by the command layer's port_lookup closure).
+* S1.B.1e: `set_parameter` schema dispatch (float → ε-tolerance,
+  others → exact `==`) via `_lookup_parameter_type`.
+
+S1.7 — command-stack integration:
+
+* S1.7.1: `restore_component` (identity-stable re-insertion for
+  the command layer's captured-state pattern).
+* S1.7.2: `unset_parameter` (symmetric to `set_parameter`; used
+  by `ChangeParameterCommand`'s "param was absent before" undo
+  branch).
+* S1.7.3: `restore_connection` + `connections_for_component`
+  (cascade discovery for `DeleteComponentCommand`).
+* S1.7.5: the `WorkspaceCommandStack.cleanChanged` binding now
+  drives `_set_dirty` / `_clear_dirty` per ADR-020
+  §"QUndoStack integration". The mutation-path calls remain
+  intact; the binding is additive and the transition-only rule
+  keeps redundant calls idempotent.
 
 Validation order in mutation methods (consistent across S1.3c.x):
 
@@ -314,13 +333,21 @@ class WorkspaceModel(QObject):
     * S1.3c.2b: `set_parameter`, `set_custom_label`, `set_locked`,
       `set_tags`, `set_annotations`, `add_connection`,
       `remove_connection`, `update_connection`.
-    * S1.3d (current): `batch()` context manager + `modelChanged`
-      signal + minimal `reset()`. Mutation methods are batch-aware:
-      inside a batch, individual fine-grained signals are suppressed
-      and changes are accumulated into a `_ChangeSetBuilder`; on
-      outermost exit, exactly one `modelChanged(change_set)` is
-      emitted (suppressed if the change_set is empty).
+    * S1.3d: `batch()` context manager + `modelChanged` signal +
+      minimal `reset()`. Mutation methods are batch-aware.
     * S1.3e: extended `reset()` semantics + `_clear_dirty()`.
+    * S1.B.1d: optional `registry` constructor arg + `registry`
+      property + `add_component_from_definition`.
+    * S1.B.1e: `set_parameter` schema dispatch +
+      `_lookup_parameter_type`.
+    * S1.7.1: `restore_component` (captured-state re-insertion).
+    * S1.7.2: `unset_parameter`.
+    * S1.7.3: `restore_connection` + `connections_for_component`.
+    * S1.7.5 (current): `_set_dirty` / `_clear_dirty` are now
+      driven both by direct mutation paths and by
+      `WorkspaceCommandStack.cleanChanged` per ADR-020
+      §"QUndoStack integration". No public API change here;
+      the binding lives in the command stack wrapper.
 
     Attributes:
         is_dirty: Read-only dirty flag per ADR-020.
@@ -1335,7 +1362,13 @@ class WorkspaceModel(QObject):
         (and even then, only the change_set carries the transition;
         subscribers query `model.is_dirty` for the actual state).
 
-        TODO(S1.7): Replace with `QUndoStack.cleanChanged` binding.
+        S1.7.5 status: called both by direct mutation paths
+        (`add_component`, `set_parameter`, etc.) and by
+        `WorkspaceCommandStack._on_clean_changed` when the stack
+        leaves its clean index. Per ADR-020 §"QUndoStack integration"
+        the binding is additive (decision A2); the transition-only
+        rule above guarantees redundant calls collapse to one
+        effective transition.
         """
         if self._dirty:
             return
@@ -1357,14 +1390,13 @@ class WorkspaceModel(QObject):
         `change_set.dirty_changed=False` per ADR-019's
         "reset_required wins; other diff fields empty" rule).
 
-        Used by `reset()` (S1.3e), and (in S2) the save path. In
-        S1.7 this helper will be replaced by a
-        `QUndoStack.cleanChanged` binding per ADR-020 §"QUndoStack
-        integration"; until then, this is the only public-API path
-        that flips the flag back to clean.
-
-        TODO(S1.7): Bind to `QUndoStack.cleanChanged` so the command
-        stack is the canonical clean-state authority.
+        S1.7.5 status: called both by `reset()` (S1.3e) and by
+        `WorkspaceCommandStack._on_clean_changed` when the stack
+        reaches its clean index (undo-to-clean or `setClean()`
+        after save). Per ADR-020 §"QUndoStack integration"
+        (decision A2) this is an additive binding — the helper
+        was not replaced; the stack is now an additional source
+        for clean transitions alongside `reset()`.
         """
         if not self._dirty:
             return

@@ -15,12 +15,16 @@ Design (decision B + A2 per the S1.B / S1.7 thread):
   rationale as ADR-003's UI / data separation: the source of truth
   does not know about the editing machinery. The shell (S1.9)
   instantiates one stack per open document.
-* **Dirty-bit binding (A2)**: This module does NOT replace the
-  model's `_set_dirty` / `_clear_dirty` helpers. Commands call
-  model mutators which call `_set_dirty` as before. The
-  `QUndoStack.cleanChanged` binding (S1.7.5) is additive — it
-  lets the model react to undo-to-clean and save-to-clean
-  transitions without rewriting the S1.3 mutation API.
+* **Dirty-bit binding (A2)** — S1.7.5: this module does NOT replace
+  the model's `_set_dirty` / `_clear_dirty` helpers. Commands still
+  call model mutators which still call `_set_dirty`. The
+  `QUndoStack.cleanChanged` binding is **additive**: it adds the
+  stack as an extra source for dirty-bit transitions so the model
+  reacts to undo-to-clean and save-to-clean events without any
+  rewrite of the S1.3 mutation API. The transition-only rule
+  inside `_set_dirty` / `_clear_dirty` keeps the binding
+  idempotent — redundant calls from a mutation path and the
+  cleanChanged path collapse into one effective transition.
 
 The base `WorkspaceCommand` is a thin `QUndoCommand` subclass that
 carries a reference to the target `WorkspaceModel`. Concrete
@@ -129,6 +133,23 @@ class WorkspaceCommandStack:
     ) -> None:
         """Initialize with the target model and an optional Qt parent.
 
+        Wires the S1.7.5 `cleanChanged` binding (decision A2 per
+        ADR-020 §"QUndoStack integration"): the stack's clean
+        transitions drive the model's `_clear_dirty` /
+        `_set_dirty` helpers, augmenting (not replacing) the
+        mutation-path sources for dirty-bit changes.
+
+        Construction-time state: the freshly-created `QUndoStack`
+        reports `isClean() == True`, but Qt does NOT emit
+        `cleanChanged` on initial state. The model's `is_dirty`
+        starts at `False`, matching the stack — no initial sync
+        is needed for the standard "shell creates stack right
+        after creating empty model" usage. Documented edge case:
+        if the model is already dirty when the stack is built
+        (e.g., direct API mutations before stack wiring), the
+        binding does NOT retroactively sync; the next stack
+        transition will pull the model back in line.
+
         Args:
             model: The `WorkspaceModel` whose mutations are
                 undo/redo-tracked.
@@ -139,6 +160,33 @@ class WorkspaceCommandStack:
         """
         self._model = model
         self._stack = QUndoStack(parent) if parent is not None else QUndoStack()
+        # S1.7.5 cleanChanged binding (closes the TODO(S1.7) markers
+        # in `WorkspaceModel._set_dirty` / `_clear_dirty`).
+        self._stack.cleanChanged.connect(self._on_clean_changed)
+
+    def _on_clean_changed(self, clean: bool) -> None:
+        """Sync the model's dirty bit with the stack's clean state.
+
+        Per ADR-020 §"QUndoStack integration" (decision A2 per the
+        S1.7 planning thread): when the stack reaches its clean
+        index — either via undo back to the original state or via
+        `setClean()` after a save — the model becomes clean.
+        Conversely, when the stack leaves the clean index (any
+        push or redo away from clean), the model becomes dirty.
+
+        The model's `_set_dirty` / `_clear_dirty` helpers honor
+        the transition-only rule, so this slot firing redundantly
+        alongside a mutation-path `_set_dirty` call (e.g., on
+        `stack.push`) is harmless — the second call is a no-op.
+
+        Args:
+            clean: True when the stack's current index equals its
+                clean index; False when it has diverged.
+        """
+        if clean:
+            self._model._clear_dirty()
+        else:
+            self._model._set_dirty()
 
     @property
     def model(self) -> WorkspaceModel:
