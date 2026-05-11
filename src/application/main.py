@@ -16,7 +16,7 @@ Or directly:
 
     python src/application/main.py
 
-References
+References:
 ----------
 * `specs/06_data_flow_and_architecture.md` §2.1 (Application Layer)
 * `specs/06_data_flow_and_architecture.md` §3 (Module Initialization Order)
@@ -34,7 +34,7 @@ logger = logging.getLogger("system_designer")
 
 def main() -> int:
     """Boot the Engineering System Designer application.
-    
+
     Returns:
         Exit code from the Qt event loop.
     """
@@ -42,51 +42,49 @@ def main() -> int:
     # log entries. This ensures the bootstrap sequence is recorded.
     _configure_logging(debug=_is_debug_mode())
     logger.info("Application starting", extra={"event": "system.startup"})
-    
+
     # Imports are performed inside main() rather than at module top to:
     # 1. keep the module importable for testing without side effects
     # 2. allow logging to be configured before Qt and registry modules
     #    emit their own bootstrap messages
     from PySide6.QtWidgets import QApplication
-    
+
     from application.SystemDesignerShell import SystemDesignerShell
-    
+
     app = QApplication(sys.argv)
     app.setOrganizationName("Engineering System Designer")
     app.setApplicationName("System Designer")
     app.setApplicationVersion("0.2.0")
-    
-    # TODO(stage_s1): bootstrap shared registries here when populated.
-    # See `specs/06_data_flow_and_architecture.md` §3 for init order:
-    #   1. logging
-    #   2. settings
-    #   3. DomainRegistry
-    #   4. ComponentRegistry
-    #   5. SvgRegistry
-    #   6. SystemModelingModule
-    #   7. ControllerDesignModule
-    #   8. SystemDesignerShell
-    
+
+    # SystemDesignerShell.__init__ bootstraps the full Phase-1
+    # dependency chain in deterministic order:
+    #   ComponentRegistry → WorkspaceModel →
+    #   WorkspaceValidatorController → WorkspaceCommandStack →
+    #   WorkspaceScene → WorkspaceView → library tree +
+    #   info panel docks → status bar + menus.
+    # The legacy `(stage_s1)` TODO is closed at S1.10 — registry
+    # construction lives inside the shell so tests can wire
+    # alternate registries without touching this module.
     shell = SystemDesignerShell()
     shell.show()
-    
+
     logger.info("Application ready", extra={"event": "system.startup"})
     return app.exec()
 
 
 def _configure_logging(debug: bool = False) -> None:
     """Configure project loggers per `specs/10_logging_conventions.md` §4.4.
-    
+
     Args:
         debug: If True, set the root level to DEBUG; otherwise INFO.
     """
     root_level = logging.DEBUG if debug else logging.INFO
     logging.getLogger("system_designer").setLevel(root_level)
-    
+
     # Engine is dormant in Phase 1; suppress its WARNING-level output
     # since the package itself raises ImportError on access (ADR-001).
     logging.getLogger("shared.engine").setLevel(logging.WARNING)
-    
+
     handler = logging.StreamHandler()
     handler.setFormatter(
         logging.Formatter(
@@ -94,7 +92,7 @@ def _configure_logging(debug: bool = False) -> None:
             datefmt="%Y-%m-%d %H:%M:%S",
         )
     )
-    
+
     root_logger = logging.getLogger("system_designer")
     # Avoid duplicate handlers if main() is called more than once
     # (e.g., from tests).
