@@ -278,6 +278,56 @@ def test_commit_connection_draw_validator_rejection_is_logged(
 
 
 @pytest.mark.unit
+def test_commit_connection_draw_emits_connection_rejected_signal(
+    two_components_in_scene: tuple[WorkspaceScene, str, str],
+) -> None:
+    """S1.10.1 — rejected candidate emits `connectionRejected(report)`.
+
+    Carries the full `ValidationReport`; subscribers extract whatever
+    subset they need (first error in the shell's status-bar slot,
+    full issue list in a future multi-issue panel).
+    """
+    s, rid, gid = two_components_in_scene
+    # Seed the duplicate-creating connection.
+    s.model.add_connection(
+        source=PortRef(component_id=rid, port_id="p"),
+        target=PortRef(component_id=gid, port_id="p"),
+    )
+    spy: list[object] = []
+    s.connectionRejected.connect(spy.append)
+
+    s.start_connection_draw(PortRef(component_id=rid, port_id="p"))
+    result = s.commit_connection_draw(PortRef(component_id=gid, port_id="p"))
+
+    assert result is None
+    assert len(spy) == 1
+    report = spy[0]
+    # Payload is a full `ValidationReport` with the duplicate error.
+    from features.SystemModelingModule.model.validation_report import ValidationReport
+
+    assert isinstance(report, ValidationReport)
+    errors = report.by_severity("error")
+    assert len(errors) >= 1
+    assert errors[0].code == "error.connection.duplicate"
+
+
+@pytest.mark.unit
+def test_commit_connection_draw_success_does_not_emit_connection_rejected(
+    two_components_in_scene: tuple[WorkspaceScene, str, str],
+) -> None:
+    """Successful commits stay silent on the rejection channel."""
+    s, rid, gid = two_components_in_scene
+    spy: list[object] = []
+    s.connectionRejected.connect(spy.append)
+
+    s.start_connection_draw(PortRef(component_id=rid, port_id="p"))
+    result = s.commit_connection_draw(PortRef(component_id=gid, port_id="p"))
+
+    assert result is not None
+    assert spy == []
+
+
+@pytest.mark.unit
 def test_commit_connection_draw_without_stack_returns_none(
     model: WorkspaceModel,
     caplog: pytest.LogCaptureFixture,

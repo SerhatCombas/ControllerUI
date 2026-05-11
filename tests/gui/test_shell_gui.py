@@ -170,3 +170,67 @@ def test_validation_summary_refreshes_after_drop(
     # The single-resistor workspace generates at least one
     # validation issue (unused-port warning + missing-ground error).
     assert report.has_errors or report.has_warnings
+
+
+# ---------------------------------------------------------------------------- #
+# S1.10.1 — connection rejection surfaces in the status bar
+# ---------------------------------------------------------------------------- #
+
+
+@pytest.mark.gui
+def test_duplicate_connection_attempt_surfaces_in_status_bar(
+    shell: SystemDesignerShell,
+) -> None:
+    """Drag-then-drop of a duplicate connection produces a status message.
+
+    Companion to the unit test in
+    `tests/.../test_workspace_scene_connection_draw.py` —
+    the unit covers signal emission, this gui test covers the
+    shell-side slot wiring. Splitting catches refactors that
+    sever the binding while leaving the emit intact.
+    """
+    from features.SystemModelingModule.model.connection import PortRef
+
+    r_id = shell.scene.drop_component(RESISTOR_DEFINITION.id, QPointF(0.0, 0.0))
+    from shared.registry.builtin import GROUND_ELECTRIC_DEFINITION
+
+    g_id = shell.scene.drop_component(GROUND_ELECTRIC_DEFINITION.id, QPointF(100.0, 0.0))
+    assert r_id is not None
+    assert g_id is not None
+
+    # First connection: succeeds.
+    shell.scene.start_connection_draw(PortRef(component_id=r_id, port_id="p"))
+    shell.scene.commit_connection_draw(PortRef(component_id=g_id, port_id="p"))
+
+    # Second attempt with the same port pair is the duplicate.
+    shell.scene.start_connection_draw(PortRef(component_id=r_id, port_id="p"))
+    shell.scene.commit_connection_draw(PortRef(component_id=g_id, port_id="p"))
+
+    msg = shell.statusBar().currentMessage()
+    assert msg.startswith(
+        "Connection rejected:"
+    ), f"expected status to start with 'Connection rejected:', got {msg!r}"
+    assert "already exists" in msg
+
+
+@pytest.mark.gui
+def test_cross_domain_connection_attempt_surfaces_in_status_bar(
+    shell: SystemDesignerShell,
+) -> None:
+    """Cross-domain drop produces a 'Connection rejected:' message."""
+    from features.SystemModelingModule.model.connection import PortRef
+    from shared.registry.builtin import MASS_DEFINITION
+
+    r_id = shell.scene.drop_component(RESISTOR_DEFINITION.id, QPointF(0.0, 0.0))
+    m_id = shell.scene.drop_component(MASS_DEFINITION.id, QPointF(200.0, 0.0))
+    assert r_id is not None
+    assert m_id is not None
+
+    shell.scene.start_connection_draw(PortRef(component_id=r_id, port_id="n"))
+    shell.scene.commit_connection_draw(PortRef(component_id=m_id, port_id="flange"))
+
+    msg = shell.statusBar().currentMessage()
+    assert msg.startswith(
+        "Connection rejected:"
+    ), f"expected status to start with 'Connection rejected:', got {msg!r}"
+    assert "incompatible domains" in msg

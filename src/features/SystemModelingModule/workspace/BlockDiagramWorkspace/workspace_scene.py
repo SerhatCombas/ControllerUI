@@ -56,7 +56,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Final
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import QColor, QPen
 from PySide6.QtWidgets import QGraphicsLineItem, QGraphicsScene
 
@@ -68,6 +68,7 @@ from features.SystemModelingModule.commands import (
     RotateComponentCommand,
 )
 from features.SystemModelingModule.model.connection import PortRef
+from features.SystemModelingModule.model.validation_report import ValidationReport
 
 from .component_graphics_item import ComponentGraphicsItem
 from .connection_graphics_item import CONNECTION_Z_VALUE, ConnectionGraphicsItem
@@ -135,6 +136,15 @@ class WorkspaceScene(QGraphicsScene):
         `WorkspaceView` — `QGraphicsView` host for this scene.
         `GridBackgroundItem` — the default-installed grid.
     """
+
+    # Emitted when `commit_connection_draw` catches a
+    # `ConnectionValidationError`. Carries the full
+    # `ValidationReport` so consumers can render any subset of
+    # issues (first error in S1.10.1; multi-issue dialog or
+    # inline panel possible in S1.11 polish without changing the
+    # signal contract — follows ADR-018's "extensible payload"
+    # principle).
+    connectionRejected = Signal(ValidationReport)  # noqa: N815 — PySide6 signal naming (spec/09 §7.2.2)
 
     def __init__(
         self,
@@ -462,6 +472,11 @@ class WorkspaceScene(QGraphicsScene):
                 target_ref.port_id,
                 exc,
             )
+            # Surface the rejection to UI subscribers (S1.10.1).
+            # The full report travels with the signal so future
+            # multi-issue presentation can extend the slot
+            # without renegotiating the contract.
+            self.connectionRejected.emit(exc.report)
             return None
         self._command_stack.push(command)
         return command.connection_id

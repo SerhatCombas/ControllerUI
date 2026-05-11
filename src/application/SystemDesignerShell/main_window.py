@@ -266,6 +266,11 @@ class SystemDesignerShell(QMainWindow):
         self._model.componentRemoved.connect(self._on_component_removed_status)
         self._model.connectionAdded.connect(self._on_connection_added_status)
         self._model.connectionRemoved.connect(self._on_connection_removed_status)
+        # S1.10.1 — visible feedback for validator-rejected
+        # connection attempts. Without this binding a cross-domain
+        # or duplicate connection drop produces no UI response
+        # (the scene logs a warning and swallows the exception).
+        self._scene.connectionRejected.connect(self._on_connection_rejected)
 
     def _wire_window_title_dirty(self) -> None:
         """Hook `dirtyChanged` so the window title gets a `*` suffix."""
@@ -332,6 +337,23 @@ class SystemDesignerShell(QMainWindow):
         self.statusBar().showMessage(
             f"Connection {connection_id!r} removed",
             _STATUS_TRANSIENT_MS,
+        )
+
+    def _on_connection_rejected(self, report: ValidationReport) -> None:
+        """Render a persistent rejection message in the status bar.
+
+        Shows the first error-severity issue's message. The full
+        report travels with the signal so a future S1.11 polish
+        pass can swap this slot for a multi-line or modal display
+        without touching the scene-side emit.
+        """
+        errors = report.by_severity("error")
+        if not errors:
+            return
+        first = errors[0]
+        self.statusBar().showMessage(
+            f"Connection rejected: {first.message}",
+            _STATUS_PERSISTENT_MS,
         )
 
     def _on_dirty_changed(self, is_dirty: bool) -> None:
