@@ -5,14 +5,22 @@ workspace model: it subscribes to every model mutation signal
 and translates each into create / update / remove operations on
 graphics items.
 
-S1.9.2 scope: component lifecycle wired through
-`ComponentGraphicsItem`. `_on_component_added` mints an item
-(short-name resolution via the model's registry when wired),
-`_on_component_removed` cleans it up, `_on_component_moved` /
-`_on_component_rotated` push position/rotation into the existing
-item, `_on_component_changed` refreshes cached display fields.
-`_on_model_changed` (batch path) replays all four operations
-from the change_set in one pass.
+S1.9.3 scope: scene-level drag-drop entry points wired to the
+command stack so a library-panel drop on the canvas pushes an
+`AddComponentCommand`. The load-bearing logic lives in the
+public `drop_component(definition_id, scene_pos)` method; the
+Qt event overrides (`dragEnterEvent` / `dragMoveEvent` /
+`dropEvent`) thin-wrap it. Drop positions are snapped to the
+grid via `snap_to_grid` before being passed to the command, so
+placement always aligns with the visual grid.
+
+Earlier sub-commits:
+
+* S1.9.1 — scene skeleton, grid item, signal wiring.
+* S1.9.2 — component lifecycle: `_on_component_added` mints a
+  `ComponentGraphicsItem`, the rest of the component slots
+  synchronize position / rotation / cached fields, and the
+  batch path replays the change_set.
 
 Connection items remain placeholders — they land in S1.9.5.
 
@@ -46,16 +54,21 @@ References:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
+from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import QGraphicsScene
 
+from features.SystemModelingModule.commands import AddComponentCommand
+
 from .component_graphics_item import ComponentGraphicsItem
-from .grid_background_item import GridBackgroundItem
+from .grid_background_item import DEFAULT_GRID_SPACING, GridBackgroundItem
 
 if TYPE_CHECKING:
-    from PySide6.QtCore import QObject, QPointF
+    from PySide6.QtCore import QObject
+    from PySide6.QtWidgets import QGraphicsSceneDragDropEvent
 
+    from features.SystemModelingModule.commands import WorkspaceCommandStack
     from features.SystemModelingModule.model.component_instance import (
         ComponentInstance,
     )
@@ -63,6 +76,32 @@ if TYPE_CHECKING:
         WorkspaceChangeSet,
     )
     from features.SystemModelingModule.model.workspace_model import WorkspaceModel
+
+
+# MIME type for drag-and-drop payloads originating from the
+# library panel. The payload body is the dotted-namespace
+# definition id of the dragged component (e.g.,
+# `"electrical.analog.components.resistor"`). The constant is
+# exported so both ends of the drag interaction (library panel
+# producer, workspace scene consumer) can reference the same
+# string without drift.
+COMPONENT_MIME_TYPE: Final[str] = "application/x-system-model-component"
+
+
+def snap_to_grid(value: float, spacing: float = DEFAULT_GRID_SPACING) -> float:
+    """Snap a scene-coordinate value to the nearest grid multiple.
+
+    Per `02 §15`: placement always aligns to the grid. The scene
+    uses this helper on drop positions so components land on
+    grid intersections; the same helper will serve S1.9.4 move
+    gestures.
+
+    Uses standard rounding (half-up via `round`), so values
+    exactly on the midpoint between two grid lines round to the
+    nearest even multiple per Python's banker's rounding rule —
+    acceptable for placement (drift is at most spacing/2).
+    """
+    return round(value / spacing) * spacing
 
 
 logger = logging.getLogger(__name__)
@@ -86,11 +125,25 @@ class WorkspaceScene(QGraphicsScene):
     def __init__(
         self,
         model: WorkspaceModel,
+        command_stack: WorkspaceCommandStack | None = None,
         parent: QObject | None = None,
     ) -> None:
-        """Construct, install the grid, and wire model signals."""
+        """Construct, install the grid, and wire model signals.
+
+        Args:
+            model: The `WorkspaceModel` the scene mirrors.
+            command_stack: Optional `WorkspaceCommandStack` used
+                by drag-drop / mouse-gesture flows to push
+                `AddComponentCommand` / move / rotate commands.
+                When `None`, drops are ignored with a warning
+                log and S1.9.4 gestures will likewise no-op —
+                the scene stays usable in tests that exercise
+                only the signal pathway.
+            parent: Optional Qt parent.
+        """
         super().__init__(parent)
         self._model: WorkspaceModel = model
+        self._command_stack: WorkspaceCommandStack | None = command_stack
         # Internal mirror dicts. `_component_items` is populated
         # by S1.9.2's signal slots; `_connection_items` lands in
         # S1.9.5.
@@ -112,6 +165,136 @@ class WorkspaceScene(QGraphicsScene):
     def grid_item(self) -> GridBackgroundItem:
         """Read-only access to the grid background item."""
         return self._grid_item
+
+    @property
+    def command_stack(self) -> WorkspaceCommandStack | None:
+        """The bound `WorkspaceCommandStack`, or `None` when unwired."""
+        return self._command_stack
+
+    # ------------------------------------------------------------------ #
+    # Public drag-drop entry point (S1.9.3)
+    # ------------------------------------------------------------------ #
+
+    def drop_component(
+        self,
+        definition_id: str,
+        scene_pos: QPointF,
+    ) -> str | None:
+        """Place a component at `scene_pos` via the command stack.
+
+        Snaps `scene_pos` to the nearest grid intersection,
+        constructs an `AddComponentCommand`, and pushes it onto
+        the bound `WorkspaceCommandStack`. The command's
+        `__init__` pre-validates the registry and definition id;
+        a `KeyError` from the registry propagates to the caller
+        so the drop handler can surface it.
+
+        Args:
+            definition_id: Dotted-namespace identifier of a
+                registered `ComponentDefinition`.
+            scene_pos: Scene-coordinate drop position
+                (typically `event.scenePos()` from a Qt drop
+                event).
+
+        Returns:
+            The new component's `cmp_<ULID>` id when the
+            command pushed successfully, or `None` when no
+            command stack is wired (in which case a warning is
+            logged and the drop is dropped on the floor).
+
+        Raises:
+            KeyError: `definition_id` is not in the registry.
+            RuntimeError: model has no registry wired (surfaced
+                from `AddComponentCommand.__init__`).
+        """
+        if self._command_stack is None:
+            logger.warning(
+                "drop_component called without a command_stack; "
+                "ignoring drop of '%s' at (%.1f, %.1f)",
+                definition_id,
+                scene_pos.x(),
+                scene_pos.y(),
+            )
+            return None
+        snapped = QPointF(snap_to_grid(scene_pos.x()), snap_to_grid(scene_pos.y()))
+        command = AddComponentCommand(self._model, definition_id, snapped)
+        self._command_stack.push(command)
+        return command.component_id
+
+    def _accepts_mime(self, mime_data: object) -> bool:
+        """Return True if `mime_data` carries our component drag payload.
+
+        Extracted so tests can verify the predicate without
+        constructing a full `QGraphicsSceneDragDropEvent` (which
+        PySide6 does not expose a public constructor for).
+        """
+        # `mime_data` is typed as `object` because the same
+        # predicate is called from `dragEnterEvent` /
+        # `dragMoveEvent` / `dropEvent` overrides where Qt
+        # passes a `QMimeData` subclass; the only attribute we
+        # need is `hasFormat(str) -> bool`.
+        has_format = getattr(mime_data, "hasFormat", None)
+        if not callable(has_format):
+            return False
+        return bool(has_format(COMPONENT_MIME_TYPE))
+
+    # ------------------------------------------------------------------ #
+    # Qt drag-drop event overrides
+    # ------------------------------------------------------------------ #
+
+    def dragEnterEvent(  # noqa: N802 — Qt API override
+        self,
+        event: QGraphicsSceneDragDropEvent,
+    ) -> None:
+        """Accept the drag iff the payload carries our MIME type."""
+        if self._accepts_mime(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(  # noqa: N802 — Qt API override
+        self,
+        event: QGraphicsSceneDragDropEvent,
+    ) -> None:
+        """Accept the drag-move so the subsequent `dropEvent` fires."""
+        if self._accepts_mime(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(  # noqa: N802 — Qt API override
+        self,
+        event: QGraphicsSceneDragDropEvent,
+    ) -> None:
+        """Extract the definition id and route through `drop_component`."""
+        mime = event.mimeData()
+        if not self._accepts_mime(mime):
+            event.ignore()
+            return
+        try:
+            # `mime.data(...)` returns `QByteArray` at runtime;
+            # `bytes(QByteArray)` is valid but mypy's stubs do not
+            # cover the overload, hence the explicit cast.
+            payload: bytes = bytes(mime.data(COMPONENT_MIME_TYPE))  # type: ignore[call-overload]
+            definition_id = payload.decode("utf-8")
+        except (UnicodeDecodeError, TypeError):
+            logger.warning("dropEvent: undecodable MIME payload; ignoring")
+            event.ignore()
+            return
+        try:
+            self.drop_component(definition_id, event.scenePos())
+        except KeyError:
+            # Registry rejected the id — log and let the drop
+            # quietly fail. Phase 1 has no visual feedback for
+            # rejected drops; S1.6 validation work may surface
+            # this through the validation panel later.
+            logger.warning(
+                "dropEvent: definition '%s' not in registry; drop ignored",
+                definition_id,
+            )
+            event.ignore()
+            return
+        event.acceptProposedAction()
 
     def _resolve_label(self, instance: ComponentInstance) -> str:
         """Resolve the on-canvas label for an instance.
@@ -172,9 +355,7 @@ class WorkspaceScene(QGraphicsScene):
             return
         instance = self._model.components.get(component_id)
         if instance is None:
-            logger.warning(
-                "componentAdded fired for unknown id %s; ignoring", component_id
-            )
+            logger.warning("componentAdded fired for unknown id %s; ignoring", component_id)
             return
         label = self._resolve_label(instance)
         item = ComponentGraphicsItem(instance, label=label)
@@ -262,11 +443,16 @@ class WorkspaceScene(QGraphicsScene):
         removed. S1.9.2 onwards will populate the dicts; the
         loop iterates whatever is present at reset time.
         """
-        for item in list(self._component_items.values()):
-            self.removeItem(item)  # type: ignore[arg-type]
+        for component_item in list(self._component_items.values()):
+            self.removeItem(component_item)
         self._component_items.clear()
-        for item in list(self._connection_items.values()):
-            self.removeItem(item)  # type: ignore[arg-type]
+        for connection_item in list(self._connection_items.values()):
+            # `_connection_items` is dict[str, object] until S1.9.5
+            # introduces `ConnectionGraphicsItem`. The cast is safe
+            # because the only thing the scene stores in this dict
+            # is `QGraphicsItem` instances supplied by future
+            # slot implementations.
+            self.removeItem(connection_item)  # type: ignore[arg-type]
         self._connection_items.clear()
         logger.debug("modelReset handled: scene cleared (grid retained)")
 

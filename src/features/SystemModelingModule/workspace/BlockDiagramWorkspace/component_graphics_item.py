@@ -218,8 +218,9 @@ class ComponentGraphicsItem(QGraphicsItem):
         # Selection overlay — drawn after the body so the
         # selection color is the topmost border. `option.state`
         # is a `QStyle.State` flag set; `State_Selected` lives on
-        # `QStyle.StateFlag`.
-        if option.state & QStyle.StateFlag.State_Selected:
+        # `QStyle.StateFlag`. PySide6 stubs do not expose `state`
+        # on `QStyleOptionGraphicsItem`.
+        if option.state & QStyle.StateFlag.State_Selected:  # type: ignore[attr-defined]
             painter.setPen(QPen(_SELECTED_BORDER_COLOR, _SELECTED_BORDER_WIDTH))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(_BODY_RECT)
