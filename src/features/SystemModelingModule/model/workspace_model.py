@@ -421,6 +421,18 @@ class WorkspaceModel(QObject):
         """Read-only mapping of `connection_id` → `Connection`."""
         return MappingProxyType(self._connections)
 
+    @property
+    def registry(self) -> ComponentRegistry | None:
+        """The optional `ComponentRegistry` wired at construction time.
+
+        Public read-only accessor for the registry attribute used by
+        `add_component_from_definition` (S1.B.1d) and the command
+        stack (S1.7.x). When None, registry-backed entrypoints raise
+        `RuntimeError` and `set_parameter` falls back to exact `==`
+        no-op suppression per S1.B.1e.
+        """
+        return self._registry
+
     # ------------------------------------------------------------------ #
     # Batch context manager (ADR-019)
     # ------------------------------------------------------------------ #
@@ -753,6 +765,50 @@ class WorkspaceModel(QObject):
             self._batch_builder.record_component_removed(component_id)
         else:
             self.componentRemoved.emit(component_id)
+
+    def restore_component(self, instance: ComponentInstance) -> None:
+        """Re-insert a previously-removed component verbatim.
+
+        Used by the command stack (S1.7) to support undo/redo of
+        component additions and deletions: the command captures the
+        full `ComponentInstance` on first redo (after
+        `add_component_from_definition` mints the id) and re-inserts
+        it on subsequent redos via this method. Because the captured
+        instance is frozen and carries its original `cmp_<ULID>` id,
+        undo → redo cycles preserve identity — which is the
+        prerequisite for stable connection references and
+        cross-feature linking (`02 §8.3`, `08 §5.6`).
+
+        Validation order:
+
+        1. Argument validation: `instance.id` must not already exist
+           in the model (collision indicates a logic bug in the
+           command sequencing — typically a missing `undo()` between
+           two `redo()` calls).
+        2. Mutation + `_set_dirty()` + signal emission (or batch
+           record), identical to `add_component`.
+
+        Args:
+            instance: A previously-captured `ComponentInstance` with
+                its original id. The dataclass is frozen, so this
+                method does not need to defensively copy it.
+
+        Raises:
+            ValueError: `instance.id` collides with an existing
+                component in the model.
+
+        See Also:
+            ADR-002 (id stability), ADR-005 (command stack),
+            `02 §29.3` (round-trip identity rule).
+        """
+        if instance.id in self._components:
+            raise ValueError(f"component id collision on restore: '{instance.id}'")
+        self._components[instance.id] = instance
+        self._set_dirty()
+        if self._batch_builder is not None:
+            self._batch_builder.record_component_added(instance.id)
+        else:
+            self.componentAdded.emit(instance.id)
 
     def move_component(self, component_id: str, new_pos: QPointF) -> None:
         """Move a component; ε no-op suppression (ADR-020)."""
