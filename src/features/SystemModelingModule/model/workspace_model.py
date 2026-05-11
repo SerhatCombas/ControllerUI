@@ -937,6 +937,59 @@ class WorkspaceModel(QObject):
         else:
             self.componentChanged.emit(component_id)
 
+    def unset_parameter(self, component_id: str, param_name: str) -> None:
+        """Remove a parameter entry from a component (no-op if absent).
+
+        Symmetric counterpart to `set_parameter`. Introduced in S1.7.2
+        for `ChangeParameterCommand`'s undo path: when the command's
+        first redo INSERTED a parameter (the entry was absent before
+        the edit), undo must REMOVE the entry rather than restore
+        `None` as a value. Removing the entry returns the instance to
+        the "use definition default at runtime" semantic per
+        `02 §11.3` / `ComponentInstance.parameters`.
+
+        Validation order (consistent with the rest of the mutation
+        API):
+
+        1. Existence check (`KeyError` if `component_id` is missing).
+        2. No-op suppression: if `param_name` is not in the instance
+           parameters dict, return early.
+        3. Mutation + `_set_dirty()` + signal emission (or batch
+           record). The emitted signal is `componentChanged` (the
+           catch-all for parameter edits), identical to
+           `set_parameter`.
+
+        Args:
+            component_id: Target component instance id.
+            param_name: Parameter id to remove. Absence is a no-op.
+
+        Raises:
+            KeyError: `component_id` is unknown.
+
+        See Also:
+            `set_parameter` (S1.B.1e),
+            `02 §11.3` (parameter defaults at runtime),
+            `02 §11.4` (Field Mutability Matrix).
+        """
+        current = self._components.get(component_id)
+        if current is None:
+            raise KeyError(component_id)
+        if param_name not in current.parameters:
+            return
+        new_parameters = dict(current.parameters)
+        del new_parameters[param_name]
+        new_instance = replace(
+            current,
+            parameters=new_parameters,
+            modified_at=_now_iso8601(),
+        )
+        self._components[component_id] = new_instance
+        self._set_dirty()
+        if self._batch_builder is not None:
+            self._batch_builder.record_component_changed(component_id)
+        else:
+            self.componentChanged.emit(component_id)
+
     def _lookup_parameter_type(
         self,
         definition_id: str,

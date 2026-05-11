@@ -13,14 +13,20 @@ of concerns rationale as ADR-003.
 Phase 1 commands (populated incrementally across S1.7.x):
 
 * `AddComponentCommand` — S1.7.1 ✓
-* `MoveComponentCommand` — S1.7.2
-* `RotateComponentCommand` — S1.7.2
-* `ChangeParameterCommand` — S1.7.2
+* `MoveComponentCommand` — S1.7.2 ✓
+* `RotateComponentCommand` — S1.7.2 ✓
+* `ChangeParameterCommand` — S1.7.2 ✓
 * `DeleteComponentCommand` — S1.7.3 (with connection cascade)
 * `AddConnectionCommand` — S1.7.4 (calls GraphValidator first)
 * `DeleteConnectionCommand` — S1.7.4
 * `ModifyConnectionCommand` — S1.7.4
 * `PasteSelectionCommand` — S1.7.5 (macro)
+
+Merge-defer note: S1.7.2 commands do not yet override
+`QUndoCommand.mergeWith()` / `id()`; consecutive same-target
+edits stack as N separate entries. Merge implementation is
+parked behind a `TODO(S1.7.future)` in each command file and is
+expected to land alongside the S1.9 UI drag handlers.
 
 References:
 ----------
@@ -33,10 +39,16 @@ References:
 """
 
 from .add_component_command import AddComponentCommand
+from .change_parameter_command import ChangeParameterCommand
+from .move_component_command import MoveComponentCommand
+from .rotate_component_command import RotateComponentCommand
 from .workspace_command_stack import WorkspaceCommand, WorkspaceCommandStack
 
 __all__ = [
     "AddComponentCommand",
+    "ChangeParameterCommand",
+    "MoveComponentCommand",
+    "RotateComponentCommand",
     "WorkspaceCommand",
     "WorkspaceCommandStack",
 ]
