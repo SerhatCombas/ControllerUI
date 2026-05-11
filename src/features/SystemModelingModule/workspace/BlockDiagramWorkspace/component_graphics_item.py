@@ -37,13 +37,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPen
 from PySide6.QtWidgets import QGraphicsItem, QStyle
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QPainter
-    from PySide6.QtWidgets import QStyleOptionGraphicsItem, QWidget
+    from PySide6.QtWidgets import (
+        QGraphicsSceneMouseEvent,
+        QStyleOptionGraphicsItem,
+        QWidget,
+    )
 
     from features.SystemModelingModule.model.component_instance import (
         ComponentInstance,
@@ -124,6 +128,11 @@ class ComponentGraphicsItem(QGraphicsItem):
         self._label: str = label or _default_label(instance.display_name)
         self._display_name: str = instance.display_name
         self._locked: bool = instance.locked
+        # Drag tracking — `mousePressEvent` captures the pre-drag
+        # position so `mouseReleaseEvent` can compute the delta
+        # and route through `commit_drag` (S1.9.4). `None` between
+        # drags.
+        self._drag_start_pos: QPointF | None = None
         # Apply position + rotation from the instance.
         self.setPos(instance.position[0], instance.position[1])
         self.setRotation(instance.rotation)
@@ -155,6 +164,94 @@ class ComponentGraphicsItem(QGraphicsItem):
     def locked(self) -> bool:
         """Current cached locked flag (test convenience)."""
         return self._locked
+
+    # ------------------------------------------------------------------ #
+    # Mouse-drag → MoveComponentCommand (S1.9.4)
+    # ------------------------------------------------------------------ #
+
+    def mousePressEvent(  # noqa: N802 — Qt API override
+        self,
+        event: QGraphicsSceneMouseEvent,
+    ) -> None:
+        """Capture the pre-drag position so release can compute the delta."""
+        self._drag_start_pos = QPointF(self.pos())
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(  # noqa: N802 — Qt API override
+        self,
+        event: QGraphicsSceneMouseEvent,
+    ) -> None:
+        """Forward Qt's release; then route the drag through `commit_drag`."""
+        super().mouseReleaseEvent(event)
+        if self._drag_start_pos is not None:
+            self.commit_drag(self._drag_start_pos, QPointF(self.pos()))
+            self._drag_start_pos = None
+
+    def commit_drag(self, start_pos: QPointF, end_pos: QPointF) -> bool:
+        """Snap `end_pos` to the grid and route through the scene's command stack.
+
+        Public so tests can exercise the drag-commit logic
+        without constructing `QGraphicsSceneMouseEvent` (PySide6
+        does not expose a public constructor for that class).
+
+        The pipeline:
+
+        1. If `end_pos == start_pos`, no drag occurred — return
+           False, no command pushed, item visual stays as-is
+           (Qt may have set the position to `end_pos == start_pos`
+           via the built-in drag, which is a no-op).
+        2. Snap `end_pos` to the grid. If the snapped position
+           equals `start_pos` (drag was sub-grid), revert the
+           item visually to `start_pos` and return False — no
+           command needed.
+        3. Otherwise revert the item visually to `start_pos` and
+           ask the scene to commit a `MoveComponentCommand` to
+           `snapped_pos`. The command's `componentMoved` signal
+           then drives the final visual update through the
+           scene's `_on_component_moved` slot, so the item
+           reaches the snapped position exactly once via the
+           model-canonical path.
+
+        Args:
+            start_pos: Pre-drag scene position (captured in
+                `mousePressEvent`).
+            end_pos: Post-drag scene position (Qt's drag-end
+                position after the built-in `ItemIsMovable`
+                handler ran).
+
+        Returns:
+            True if a `MoveComponentCommand` was pushed onto the
+            scene's command stack; False otherwise (no drag,
+            sub-grid drag, or no command_stack wired).
+        """
+        # Avoid the snap import cycle by importing inside the
+        # function — `workspace_scene` imports this item, so a
+        # top-level import would deadlock at module-load time.
+        from .workspace_scene import snap_to_grid
+
+        if end_pos == start_pos:
+            return False
+        snapped = QPointF(snap_to_grid(end_pos.x()), snap_to_grid(end_pos.y()))
+        if snapped == start_pos:
+            # Sub-grid drag — bounce back to start without a command.
+            self.setPos(start_pos)
+            return False
+        # Revert the item visually so the command pipeline is the
+        # single source of position update.
+        self.setPos(start_pos)
+        # `self.scene()` is typed as non-None in PySide6 stubs but can
+        # return None at runtime when the item is detached.
+        scene: object | None = self.scene()
+        if scene is None:
+            return False
+        # Duck-typed call: `WorkspaceScene` exposes
+        # `commit_component_move`; using `getattr` avoids a
+        # circular import with the scene module.
+        commit = getattr(scene, "commit_component_move", None)
+        if not callable(commit):
+            return False
+        commit(self._component_id, snapped)
+        return True
 
     def update_from_instance(
         self,

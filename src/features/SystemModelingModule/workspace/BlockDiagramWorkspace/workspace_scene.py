@@ -59,7 +59,11 @@ from typing import TYPE_CHECKING, Final
 from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import QGraphicsScene
 
-from features.SystemModelingModule.commands import AddComponentCommand
+from features.SystemModelingModule.commands import (
+    AddComponentCommand,
+    MoveComponentCommand,
+    RotateComponentCommand,
+)
 
 from .component_graphics_item import ComponentGraphicsItem
 from .grid_background_item import DEFAULT_GRID_SPACING, GridBackgroundItem
@@ -220,6 +224,91 @@ class WorkspaceScene(QGraphicsScene):
         command = AddComponentCommand(self._model, definition_id, snapped)
         self._command_stack.push(command)
         return command.component_id
+
+    # ------------------------------------------------------------------ #
+    # Mouse-gesture command bridges (S1.9.4)
+    # ------------------------------------------------------------------ #
+
+    def commit_component_move(
+        self,
+        component_id: str,
+        new_pos: QPointF,
+    ) -> bool:
+        """Push a `MoveComponentCommand` for a finished drag.
+
+        Called by `ComponentGraphicsItem.commit_drag` on mouse
+        release. `new_pos` is the snapped target position; the
+        item has already been reverted to its pre-drag position
+        so the model-canonical move signal drives the final
+        visual update.
+
+        Args:
+            component_id: Target component id.
+            new_pos: Scene-coordinate target position (already
+                grid-snapped by the caller).
+
+        Returns:
+            True if a command was pushed; False when no
+            `command_stack` is wired or the component is no
+            longer in the model.
+        """
+        if self._command_stack is None:
+            logger.warning(
+                "commit_component_move called without a command_stack; "
+                "ignoring move of '%s' to (%.1f, %.1f)",
+                component_id,
+                new_pos.x(),
+                new_pos.y(),
+            )
+            return False
+        if component_id not in self._model.components:
+            logger.warning(
+                "commit_component_move for unknown component_id '%s'; ignoring",
+                component_id,
+            )
+            return False
+        command = MoveComponentCommand(self._model, component_id, new_pos)
+        self._command_stack.push(command)
+        return True
+
+    def rotate_selected_components(self, angle_delta: float = 90.0) -> int:
+        """Rotate each selected component by `angle_delta` degrees.
+
+        Pushes one `RotateComponentCommand` per selected
+        `ComponentGraphicsItem`. The target rotation is
+        `(current + angle_delta) % 360.0`, snapped to the Phase-1
+        grid `{0, 90, 180, 270}` by `RotateComponentCommand`'s
+        own pre-validation.
+
+        Multi-select rotation produces N separate commands on the
+        stack. Callers that want to coalesce them into a single
+        undo entry should wrap the call in `model.batch()` (which
+        suppresses individual signals but the stack still pushes
+        N entries — true single-entry coalescing waits for
+        QUndoStack macro support in a future stage).
+
+        Args:
+            angle_delta: Rotation step in degrees. Phase 1 callers
+                pass 90.0 or -90.0; other values will likely
+                fail the rotation command's grid pre-validation.
+
+        Returns:
+            Number of commands pushed.
+        """
+        if self._command_stack is None:
+            return 0
+        pushed = 0
+        for item in self.selectedItems():
+            if not isinstance(item, ComponentGraphicsItem):
+                continue
+            instance = self._model.components.get(item.component_id)
+            if instance is None:
+                continue
+            new_rotation = (instance.rotation + angle_delta) % 360.0
+            command = RotateComponentCommand(self._model, item.component_id, new_rotation)
+            self._command_stack.push(command)
+            pushed += 1
+        return pushed
 
     def _accepts_mime(self, mime_data: object) -> bool:
         """Return True if `mime_data` carries our component drag payload.
