@@ -17,9 +17,11 @@ Phase 1 commands (populated incrementally across S1.7.x):
 * `RotateComponentCommand` — S1.7.2 ✓
 * `ChangeParameterCommand` — S1.7.2 ✓
 * `DeleteComponentCommand` — S1.7.3 ✓ (with connection cascade)
-* `AddConnectionCommand` — S1.7.4 (calls GraphValidator first)
-* `DeleteConnectionCommand` — S1.7.4
-* `ModifyConnectionCommand` — S1.7.4
+* `AddConnectionCommand` — S1.7.4 ✓ (calls GraphValidator; raises
+  `ConnectionValidationError` on error-severity issues; exposes
+  warning issues via `command.warnings`)
+* `DeleteConnectionCommand` — S1.7.4 ✓
+* `ModifyConnectionCommand` — S1.7.4 ✓
 * `PasteSelectionCommand` — S1.7.5 (macro)
 
 Merge-defer note: S1.7.2 commands do not yet override
@@ -39,16 +41,23 @@ References:
 """
 
 from .add_component_command import AddComponentCommand
+from .add_connection_command import AddConnectionCommand, ConnectionValidationError
 from .change_parameter_command import ChangeParameterCommand
 from .delete_component_command import DeleteComponentCommand
+from .delete_connection_command import DeleteConnectionCommand
+from .modify_connection_command import ModifyConnectionCommand
 from .move_component_command import MoveComponentCommand
 from .rotate_component_command import RotateComponentCommand
 from .workspace_command_stack import WorkspaceCommand, WorkspaceCommandStack
 
 __all__ = [
     "AddComponentCommand",
+    "AddConnectionCommand",
     "ChangeParameterCommand",
+    "ConnectionValidationError",
     "DeleteComponentCommand",
+    "DeleteConnectionCommand",
+    "ModifyConnectionCommand",
     "MoveComponentCommand",
     "RotateComponentCommand",
     "WorkspaceCommand",
