@@ -56,35 +56,40 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Final
 
-from PySide6.QtCore import QPointF
-from PySide6.QtWidgets import QGraphicsScene
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import QColor, QPen
+from PySide6.QtWidgets import QGraphicsLineItem, QGraphicsScene
 
 from features.SystemModelingModule.commands import (
     AddComponentCommand,
+    AddConnectionCommand,
+    ConnectionValidationError,
     MoveComponentCommand,
     RotateComponentCommand,
 )
+from features.SystemModelingModule.model.connection import PortRef
 
 from .component_graphics_item import ComponentGraphicsItem
-from .connection_graphics_item import ConnectionGraphicsItem
+from .connection_graphics_item import CONNECTION_Z_VALUE, ConnectionGraphicsItem
 from .grid_background_item import DEFAULT_GRID_SPACING, GridBackgroundItem
+from .port_graphics_item import PortGraphicsItem
 
 if TYPE_CHECKING:
     from PySide6.QtCore import QObject
-    from PySide6.QtWidgets import QGraphicsSceneDragDropEvent
+    from PySide6.QtWidgets import (
+        QGraphicsSceneDragDropEvent,
+        QGraphicsSceneMouseEvent,
+    )
 
     from features.SystemModelingModule.commands import WorkspaceCommandStack
     from features.SystemModelingModule.model.component_instance import (
         ComponentInstance,
     )
-    from features.SystemModelingModule.model.connection import PortRef
     from features.SystemModelingModule.model.workspace_change_set import (
         WorkspaceChangeSet,
     )
     from features.SystemModelingModule.model.workspace_model import WorkspaceModel
     from shared.registry import PortDefinition
-
-    from .port_graphics_item import PortGraphicsItem
 
 
 # MIME type for drag-and-drop payloads originating from the
@@ -158,6 +163,14 @@ class WorkspaceScene(QGraphicsScene):
         # populated by S1.9.5a's slots.
         self._component_items: dict[str, ComponentGraphicsItem] = {}
         self._connection_items: dict[str, ConnectionGraphicsItem] = {}
+        # S1.9.5b connection-draw drag state. `_pending_source`
+        # holds the originating `PortRef` between `mousePress` on
+        # a port and the eventual `mouseRelease` that either
+        # commits the connection or cancels the draw. The line
+        # item is a temporary rubber-band visual rendered above
+        # connection items but below port items.
+        self._pending_source: PortRef | None = None
+        self._pending_line_item: QGraphicsLineItem | None = None
         # Install the grid first so it sits at the back of the
         # stacking order via its `GRID_Z_VALUE`.
         self._grid_item: GridBackgroundItem = GridBackgroundItem()
@@ -314,6 +327,204 @@ class WorkspaceScene(QGraphicsScene):
             self._command_stack.push(command)
             pushed += 1
         return pushed
+
+    # ------------------------------------------------------------------ #
+    # Connection-draw drag (S1.9.5b)
+    # ------------------------------------------------------------------ #
+
+    @property
+    def pending_connection_source(self) -> PortRef | None:
+        """The in-flight connection-draw source, or `None` if idle.
+
+        Test convenience — production callers go through the
+        `start_connection_draw` / `commit_connection_draw` API.
+        """
+        return self._pending_source
+
+    def port_at(self, scene_pos: QPointF) -> PortRef | None:
+        """Find a `PortGraphicsItem` at `scene_pos` and return its `PortRef`.
+
+        Walks the scene's items under the position in z-order
+        (highest first). Returns the `(component_id, port_id)`
+        of the first `PortGraphicsItem` whose parent is a
+        `ComponentGraphicsItem`. Returns `None` when no port
+        sits under the cursor.
+
+        Used by `mousePressEvent` to detect connection-draw
+        candidates and by `mouseReleaseEvent` to resolve the
+        drop target.
+        """
+        for item in self.items(scene_pos):
+            if not isinstance(item, PortGraphicsItem):
+                continue
+            parent = item.parentItem()
+            if isinstance(parent, ComponentGraphicsItem):
+                return PortRef(
+                    component_id=parent.component_id,
+                    port_id=item.port_id,
+                )
+        return None
+
+    def start_connection_draw(self, source_ref: PortRef) -> bool:
+        """Begin a connection-draw drag from a source port.
+
+        Initializes `_pending_source`, mints the rubber-band
+        line item rooted at the port's `scenePos()`, and
+        registers everything for the subsequent
+        `update_connection_draw` / `commit_connection_draw`
+        cycle.
+
+        Args:
+            source_ref: Source endpoint as a `(component_id,
+                port_id)` pair.
+
+        Returns:
+            True when the draw started successfully; False if
+            the source port cannot be resolved (component
+            removed, port id unknown) or another draw is
+            already in flight.
+        """
+        if self._pending_source is not None:
+            return False
+        source_port = self._resolve_port_item(source_ref)
+        if source_port is None:
+            return False
+        self._pending_source = source_ref
+        start = source_port.scenePos()
+        line = QGraphicsLineItem(start.x(), start.y(), start.x(), start.y())
+        # Place the rubber-band just above wires; ports stay on
+        # top so the user can still aim at a target port through
+        # the line.
+        line.setZValue(CONNECTION_Z_VALUE + 0.5)
+        pen = QPen(QColor(74, 144, 226))
+        pen.setStyle(Qt.PenStyle.DashLine)
+        pen.setWidth(2)
+        line.setPen(pen)
+        self.addItem(line)
+        self._pending_line_item = line
+        return True
+
+    def update_connection_draw(self, cursor_pos: QPointF) -> None:
+        """Extend the rubber-band line to the current cursor position.
+
+        No-op when no draw is in flight. If the source port has
+        disappeared mid-drag (e.g., its component was deleted by
+        an undo arriving from a different thread), cancels the
+        draw cleanly.
+        """
+        if self._pending_source is None or self._pending_line_item is None:
+            return
+        source_port = self._resolve_port_item(self._pending_source)
+        if source_port is None:
+            self.cancel_connection_draw()
+            return
+        start = source_port.scenePos()
+        self._pending_line_item.setLine(start.x(), start.y(), cursor_pos.x(), cursor_pos.y())
+
+    def commit_connection_draw(self, target_ref: PortRef) -> str | None:
+        """Finalize the connection-draw drag with the resolved target port.
+
+        Tears down the rubber-band, then attempts to push an
+        `AddConnectionCommand`. The command's `__init__` runs
+        `GraphValidator` and raises `ConnectionValidationError`
+        on error-severity issues; this method catches the
+        exception, logs a warning, and returns `None` — the
+        connection is silently rejected at the visual layer,
+        leaving model and stack unchanged.
+
+        Args:
+            target_ref: Target endpoint as a `(component_id,
+                port_id)` pair.
+
+        Returns:
+            The new connection's `con_<ULID>` on success, or
+            `None` when no draw was in flight, the source
+            equals the target (self-connection), the validator
+            rejected the candidate, or no command stack is wired.
+        """
+        if self._pending_source is None:
+            return None
+        source_ref = self._pending_source
+        self._teardown_pending_draw()
+        if source_ref == target_ref:
+            return None  # self-connection — validator would reject anyway
+        if self._command_stack is None:
+            logger.warning("commit_connection_draw called without a command_stack; ignoring")
+            return None
+        try:
+            command = AddConnectionCommand(self._model, source_ref, target_ref)
+        except ConnectionValidationError as exc:
+            logger.warning(
+                "Connection from %s/%s to %s/%s rejected by validator: %s",
+                source_ref.component_id,
+                source_ref.port_id,
+                target_ref.component_id,
+                target_ref.port_id,
+                exc,
+            )
+            return None
+        self._command_stack.push(command)
+        return command.connection_id
+
+    def cancel_connection_draw(self) -> None:
+        """Abort the in-flight connection-draw drag (idempotent)."""
+        self._teardown_pending_draw()
+
+    def _teardown_pending_draw(self) -> None:
+        """Remove the rubber-band item and clear pending state."""
+        if self._pending_line_item is not None:
+            self.removeItem(self._pending_line_item)
+            self._pending_line_item = None
+        self._pending_source = None
+
+    # ------------------------------------------------------------------ #
+    # Mouse event overrides for connection-draw intercept (S1.9.5b)
+    # ------------------------------------------------------------------ #
+
+    def mousePressEvent(  # noqa: N802 — Qt API override
+        self,
+        event: QGraphicsSceneMouseEvent,
+    ) -> None:
+        """Intercept left-clicks on ports to start a connection draw.
+
+        When the click hits a `PortGraphicsItem`, the scene
+        starts a connection draw and consumes the event so the
+        underlying component does not begin a drag. Otherwise
+        the event flows through `super().mousePressEvent` to
+        the standard scene → item dispatch.
+        """
+        if event.button() == Qt.MouseButton.LeftButton:
+            port_ref = self.port_at(event.scenePos())
+            if port_ref is not None and self.start_connection_draw(port_ref):
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(  # noqa: N802 — Qt API override
+        self,
+        event: QGraphicsSceneMouseEvent,
+    ) -> None:
+        """Forward to the connection-draw update path when one is in flight."""
+        if self._pending_source is not None:
+            self.update_connection_draw(event.scenePos())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(  # noqa: N802 — Qt API override
+        self,
+        event: QGraphicsSceneMouseEvent,
+    ) -> None:
+        """Resolve the drop target and commit or cancel the draw."""
+        if self._pending_source is not None:
+            target_ref = self.port_at(event.scenePos())
+            if target_ref is not None:
+                self.commit_connection_draw(target_ref)
+            else:
+                self.cancel_connection_draw()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def _accepts_mime(self, mime_data: object) -> bool:
         """Return True if `mime_data` carries our component drag payload.
