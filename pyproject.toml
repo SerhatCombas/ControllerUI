@@ -92,6 +92,9 @@ ignore = [
 "tests/**/*.py" = ["D"]
 # Allow unused imports for re-export
 "**/__init__.py" = ["F401"]
+# CLI smoke / diagnostic scripts use `print()` for stdout; logging
+# is reserved for module diagnostics, not user-facing terminal output.
+"scripts/**/*.py" = ["T201"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["application", "features", "shared"]
