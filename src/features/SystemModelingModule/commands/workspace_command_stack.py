@@ -47,14 +47,20 @@ References:
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from PySide6.QtGui import QUndoCommand, QUndoStack
+
+from shared.utils import logging_events as events
 
 if TYPE_CHECKING:
     from PySide6.QtCore import QObject
 
     from features.SystemModelingModule.model.workspace_model import WorkspaceModel
+
+
+logger = logging.getLogger(__name__)
 
 
 class WorkspaceCommand(QUndoCommand):
@@ -214,10 +220,28 @@ class WorkspaceCommandStack:
 
     def undo(self) -> None:
         """Undo the top command (no-op when `can_undo()` is False)."""
+        if self._stack.canUndo():
+            logger.info(
+                "Command undone: %s",
+                self._stack.undoText(),
+                extra={
+                    "event": events.COMMAND_UNDO,
+                    "command_text": self._stack.undoText(),
+                },
+            )
         self._stack.undo()
 
     def redo(self) -> None:
         """Redo the next command (no-op when `can_redo()` is False)."""
+        if self._stack.canRedo():
+            logger.info(
+                "Command redone: %s",
+                self._stack.redoText(),
+                extra={
+                    "event": events.COMMAND_REDO,
+                    "command_text": self._stack.redoText(),
+                },
+            )
         self._stack.redo()
 
     def can_undo(self) -> bool:

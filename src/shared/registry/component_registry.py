@@ -25,7 +25,10 @@ References:
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
+
+from shared.utils import logging_events as events
 
 from .port_definition import PortDefinition  # noqa: TCH001 — used in return type
 
@@ -35,6 +38,9 @@ if TYPE_CHECKING:
     from shared.types.domain import DomainId
 
     from .component_definition import ComponentDefinition
+
+
+logger = logging.getLogger(__name__)
 
 
 class ComponentRegistry:
@@ -66,11 +72,31 @@ class ComponentRegistry:
                 Bootstrap fails fast — the registry never enters a
                 half-populated state.
         """
+        logger.info(
+            "ComponentRegistry bootstrap started",
+            extra={"event": events.REGISTRY_BOOTSTRAP_STARTED},
+        )
         self._definitions: dict[str, ComponentDefinition] = {}
         for definition in definitions:
             if definition.id in self._definitions:
                 raise ValueError(f"duplicate component definition id: '{definition.id}'")
             self._definitions[definition.id] = definition
+            logger.info(
+                "ComponentDefinition registered",
+                extra={
+                    "event": events.REGISTRY_DEFINITION_REGISTERED,
+                    "definition_id": definition.id,
+                    "domain": definition.domain,
+                    "category": definition.category,
+                },
+            )
+        logger.info(
+            "ComponentRegistry bootstrap completed",
+            extra={
+                "event": events.REGISTRY_BOOTSTRAP_COMPLETED,
+                "definition_count": len(self._definitions),
+            },
+        )
 
     # ------------------------------------------------------------------ #
     # Primary lookup
@@ -92,6 +118,13 @@ class ComponentRegistry:
         try:
             return self._definitions[definition_id]
         except KeyError:
+            logger.warning(
+                "ComponentDefinition lookup failed",
+                extra={
+                    "event": events.REGISTRY_DEFINITION_LOOKUP_FAILED,
+                    "definition_id": definition_id,
+                },
+            )
             raise KeyError(definition_id) from None
 
     def has(self, definition_id: str) -> bool:
