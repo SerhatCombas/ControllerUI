@@ -66,6 +66,7 @@ from features.SystemModelingModule.commands import (
 )
 
 from .component_graphics_item import ComponentGraphicsItem
+from .connection_graphics_item import ConnectionGraphicsItem
 from .grid_background_item import DEFAULT_GRID_SPACING, GridBackgroundItem
 
 if TYPE_CHECKING:
@@ -76,10 +77,14 @@ if TYPE_CHECKING:
     from features.SystemModelingModule.model.component_instance import (
         ComponentInstance,
     )
+    from features.SystemModelingModule.model.connection import PortRef
     from features.SystemModelingModule.model.workspace_change_set import (
         WorkspaceChangeSet,
     )
     from features.SystemModelingModule.model.workspace_model import WorkspaceModel
+    from shared.registry import PortDefinition
+
+    from .port_graphics_item import PortGraphicsItem
 
 
 # MIME type for drag-and-drop payloads originating from the
@@ -149,10 +154,10 @@ class WorkspaceScene(QGraphicsScene):
         self._model: WorkspaceModel = model
         self._command_stack: WorkspaceCommandStack | None = command_stack
         # Internal mirror dicts. `_component_items` is populated
-        # by S1.9.2's signal slots; `_connection_items` lands in
-        # S1.9.5.
+        # by S1.9.2's signal slots; `_connection_items` is
+        # populated by S1.9.5a's slots.
         self._component_items: dict[str, ComponentGraphicsItem] = {}
-        self._connection_items: dict[str, object] = {}
+        self._connection_items: dict[str, ConnectionGraphicsItem] = {}
         # Install the grid first so it sits at the back of the
         # stacking order via its `GRID_Z_VALUE`.
         self._grid_item: GridBackgroundItem = GridBackgroundItem()
@@ -400,6 +405,37 @@ class WorkspaceScene(QGraphicsScene):
             return ""
         return registry.get(instance.definition_id).short_name
 
+    def _resolve_ports(
+        self,
+        instance: ComponentInstance,
+    ) -> tuple[PortDefinition, ...]:
+        """Resolve the `PortDefinition` tuple for a component instance.
+
+        Returns the empty tuple when the registry is not wired
+        or when the instance's `definition_id` is not
+        registered. The `ComponentGraphicsItem` treats an
+        empty / None ports argument as "render the body only,
+        no port circles" — useful for legacy / migration paths
+        where definitions may be missing.
+        """
+        registry = self._model.registry
+        if registry is None or not registry.has(instance.definition_id):
+            return ()
+        return registry.get(instance.definition_id).ports
+
+    def _resolve_port_item(self, port_ref: PortRef) -> PortGraphicsItem | None:
+        """Resolve a `PortRef` to the matching `PortGraphicsItem`.
+
+        Looks up the parent component item in
+        `_component_items` and asks it for the port child by
+        port id. Returns `None` if either the component item
+        or the port child is missing.
+        """
+        component_item = self._component_items.get(port_ref.component_id)
+        if component_item is None:
+            return None
+        return component_item.port_item(port_ref.port_id)
+
     def _connect_model_signals(self) -> None:
         """Wire the 10 model signals the scene cares about.
 
@@ -434,11 +470,11 @@ class WorkspaceScene(QGraphicsScene):
         """Mint a `ComponentGraphicsItem` for the new component.
 
         Reads the fresh `ComponentInstance` from the model,
-        resolves the on-canvas label via the registry (when
-        wired), and registers the item in `_component_items`.
-        If the id is already in the dict, this is a defensive
-        no-op — the addition was already handled (e.g., by a
-        replay of the same signal).
+        resolves the on-canvas label via the registry, looks up
+        the `PortDefinition` records via `_resolve_ports`, and
+        constructs the item with port children. The item is
+        registered in `_component_items`. If the id is already
+        in the dict, this is a defensive no-op.
         """
         if component_id in self._component_items:
             return
@@ -447,7 +483,8 @@ class WorkspaceScene(QGraphicsScene):
             logger.warning("componentAdded fired for unknown id %s; ignoring", component_id)
             return
         label = self._resolve_label(instance)
-        item = ComponentGraphicsItem(instance, label=label)
+        ports = self._resolve_ports(instance)
+        item = ComponentGraphicsItem(instance, label=label, ports=ports)
         self.addItem(item)
         self._component_items[component_id] = item
 
@@ -477,15 +514,13 @@ class WorkspaceScene(QGraphicsScene):
         old_pos: QPointF,
         new_pos: QPointF,
     ) -> None:
-        """Push the new position into the item."""
+        """Push the new position into the item and refresh attached wires."""
         item = self._component_items.get(component_id)
         if item is None:
             return
         item.setPos(new_pos)
-        # `old_pos` is unused at the view layer — the item's
-        # current position is the source of truth for any
-        # forthcoming wire-endpoint updates (S1.9.5).
-        _ = old_pos
+        self._refresh_connections_for_component(component_id)
+        _ = old_pos  # unused at the view layer
 
     def _on_component_rotated(
         self,
@@ -493,33 +528,81 @@ class WorkspaceScene(QGraphicsScene):
         old_rotation: float,
         new_rotation: float,
     ) -> None:
-        """Push the new rotation into the item."""
+        """Push the new rotation into the item and refresh attached wires."""
         item = self._component_items.get(component_id)
         if item is None:
             return
         item.setRotation(new_rotation)
+        self._refresh_connections_for_component(component_id)
         _ = old_rotation  # unused at the view layer
 
+    def _refresh_connections_for_component(self, component_id: str) -> None:
+        """Trigger `update_geometry()` on every connection touching `component_id`.
+
+        Called from `_on_component_moved` / `_on_component_rotated`
+        so wires follow their endpoints. Uses
+        `WorkspaceModel.connections_for_component` (S1.7.3) to
+        find the affected connections.
+        """
+        for conn in self._model.connections_for_component(component_id):
+            item = self._connection_items.get(conn.id)
+            if item is not None:
+                item.update_geometry()
+
     # ------------------------------------------------------------------ #
-    # Connection-related slots (S1.9.5 fills these in)
+    # Connection-related slots (S1.9.5a)
     # ------------------------------------------------------------------ #
 
     def _on_connection_added(self, connection_id: str) -> None:
-        """Handle a new connection.
+        """Mint a `ConnectionGraphicsItem` for the new connection.
 
-        S1.9.1: placeholder. S1.9.5 will mint a
-        `ConnectionGraphicsItem` and register it in
-        `_connection_items`.
+        Looks up the source and target port items via the
+        component-item registry; if either endpoint is missing
+        (defensive guard — shouldn't happen in normal flow
+        because the model rejects connections with unknown
+        component / port references), the slot logs and skips.
         """
-        logger.debug("connectionAdded (S1.9.5 will render): %s", connection_id)
+        if connection_id in self._connection_items:
+            return
+        connection = self._model.connections.get(connection_id)
+        if connection is None:
+            logger.warning("connectionAdded fired for unknown id %s; ignoring", connection_id)
+            return
+        source_port = self._resolve_port_item(connection.source)
+        target_port = self._resolve_port_item(connection.target)
+        if source_port is None or target_port is None:
+            logger.warning(
+                "connectionAdded for %s: missing port item " "(source=%s target=%s); ignoring",
+                connection_id,
+                "ok" if source_port else "missing",
+                "ok" if target_port else "missing",
+            )
+            return
+        item = ConnectionGraphicsItem(
+            connection_id=connection_id,
+            source_port=source_port,
+            target_port=target_port,
+        )
+        self.addItem(item)
+        self._connection_items[connection_id] = item
 
     def _on_connection_removed(self, connection_id: str) -> None:
-        """Handle a connection removal."""
-        logger.debug("connectionRemoved (S1.9.5 will derender): %s", connection_id)
+        """Remove the `ConnectionGraphicsItem` for a deleted connection."""
+        item = self._connection_items.pop(connection_id, None)
+        if item is not None:
+            self.removeItem(item)
 
     def _on_connection_changed(self, connection_id: str) -> None:
-        """Handle a connection property edit (label / routing / style)."""
-        logger.debug("connectionChanged (S1.9.5 will update): %s", connection_id)
+        """Refresh the connection's geometry on routing / label edits.
+
+        Phase 1 routing is a straight line, so geometry refresh
+        is the only visible side-effect. Routing-aware drawing
+        will add more behavior here when the schema gains
+        waypoints.
+        """
+        item = self._connection_items.get(connection_id)
+        if item is not None:
+            item.update_geometry()
 
     # ------------------------------------------------------------------ #
     # Structural slots
@@ -536,12 +619,7 @@ class WorkspaceScene(QGraphicsScene):
             self.removeItem(component_item)
         self._component_items.clear()
         for connection_item in list(self._connection_items.values()):
-            # `_connection_items` is dict[str, object] until S1.9.5
-            # introduces `ConnectionGraphicsItem`. The cast is safe
-            # because the only thing the scene stores in this dict
-            # is `QGraphicsItem` instances supplied by future
-            # slot implementations.
-            self.removeItem(connection_item)  # type: ignore[arg-type]
+            self.removeItem(connection_item)
         self._connection_items.clear()
         logger.debug("modelReset handled: scene cleared (grid retained)")
 
@@ -568,10 +646,21 @@ class WorkspaceScene(QGraphicsScene):
             # The `modelReset` signal already fired the full
             # cleanup path inside the batch; nothing more to do.
             return
+        # Order within the batch (per ADR-019 §"Diff aggregation"):
+        # remove first (clean up before re-adds), then add
+        # components (so connection items can resolve their
+        # ports), then add connections, then refresh changed
+        # entities. Removed connections also come before added
+        # ones so a stale wire never lingers across a re-add
+        # cycle inside the same batch.
+        for conn_id in change_set.removed_connections:
+            self._on_connection_removed(conn_id)
         for cid in change_set.removed_components:
             self._on_component_removed(cid)
         for cid in change_set.added_components:
             self._on_component_added(cid)
+        for conn_id in change_set.added_connections:
+            self._on_connection_added(conn_id)
         for cid in change_set.changed_components:
             instance = self._model.components.get(cid)
             item = self._component_items.get(cid)
@@ -584,6 +673,12 @@ class WorkspaceScene(QGraphicsScene):
             item.setPos(instance.position[0], instance.position[1])
             item.setRotation(instance.rotation)
             item.update_from_instance(instance, label=None)
+            # Component move/rotate inside the batch needs the
+            # connection geometry refresh that the fine-grained
+            # slots would normally trigger.
+            self._refresh_connections_for_component(cid)
+        for conn_id in change_set.changed_connections:
+            self._on_connection_changed(conn_id)
 
 
 __all__ = ["WorkspaceScene"]

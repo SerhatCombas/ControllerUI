@@ -41,7 +41,11 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPen
 from PySide6.QtWidgets import QGraphicsItem, QStyle
 
+from .port_graphics_item import PortGraphicsItem
+
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from PySide6.QtGui import QPainter
     from PySide6.QtWidgets import (
         QGraphicsSceneMouseEvent,
@@ -52,6 +56,7 @@ if TYPE_CHECKING:
     from features.SystemModelingModule.model.component_instance import (
         ComponentInstance,
     )
+    from shared.registry import PortDefinition
 
 
 # Z-value for placed components — sits above the grid (z = -100)
@@ -117,9 +122,24 @@ class ComponentGraphicsItem(QGraphicsItem):
         self,
         instance: ComponentInstance,
         label: str = "",
+        ports: Sequence[PortDefinition] | None = None,
         parent: QGraphicsItem | None = None,
     ) -> None:
-        """Construct from a `ComponentInstance` snapshot."""
+        """Construct from a `ComponentInstance` snapshot.
+
+        Args:
+            instance: The `ComponentInstance` to render.
+            label: Short on-canvas label (see class docstring).
+            ports: Optional sequence of `PortDefinition` records
+                from the component's registered
+                `ComponentDefinition`. When supplied, the item
+                mints one `PortGraphicsItem` per port at the
+                `relative_position` mapped into the placeholder
+                body's local coordinate system. When `None` (the
+                default), no ports are drawn — useful for tests
+                that exercise only the component-level visual.
+            parent: Optional parent graphics item.
+        """
         super().__init__(parent)
         self._component_id: str = instance.id
         # Cache display fields. Position / rotation flow through
@@ -133,6 +153,9 @@ class ComponentGraphicsItem(QGraphicsItem):
         # and route through `commit_drag` (S1.9.4). `None` between
         # drags.
         self._drag_start_pos: QPointF | None = None
+        # Port children registry — populated below when `ports`
+        # is supplied so `port_item(id)` can resolve by id.
+        self._port_items: dict[str, PortGraphicsItem] = {}
         # Apply position + rotation from the instance.
         self.setPos(instance.position[0], instance.position[1])
         self.setRotation(instance.rotation)
@@ -144,6 +167,28 @@ class ComponentGraphicsItem(QGraphicsItem):
             QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges,
             enabled=True,
         )
+        # Create port children at their relative-position offsets.
+        if ports is not None:
+            for port_def in ports:
+                self._add_port_child(port_def)
+
+    def _add_port_child(self, port_def: PortDefinition) -> None:
+        """Mint and position a `PortGraphicsItem` child for the port.
+
+        Maps `relative_position` (0..1 normalized within the
+        body rect) into item-local coordinates centered on the
+        component origin.
+        """
+        rx, ry = port_def.relative_position
+        local_x = (rx * (2.0 * _BODY_HALF_WIDTH)) - _BODY_HALF_WIDTH
+        local_y = (ry * (2.0 * _BODY_HALF_HEIGHT)) - _BODY_HALF_HEIGHT
+        port_item = PortGraphicsItem(
+            port_id=port_def.id,
+            domain=port_def.domain,
+            parent=self,
+        )
+        port_item.setPos(local_x, local_y)
+        self._port_items[port_def.id] = port_item
 
     @property
     def component_id(self) -> str:
@@ -164,6 +209,20 @@ class ComponentGraphicsItem(QGraphicsItem):
     def locked(self) -> bool:
         """Current cached locked flag (test convenience)."""
         return self._locked
+
+    @property
+    def port_items(self) -> dict[str, PortGraphicsItem]:
+        """Mapping of `port_id` → `PortGraphicsItem` (test convenience).
+
+        Read-only view; mutating the returned dict does not
+        re-parent the items. Tests rely on this to assert that
+        ports were minted and positioned correctly.
+        """
+        return dict(self._port_items)
+
+    def port_item(self, port_id: str) -> PortGraphicsItem | None:
+        """Resolve a port-id to its `PortGraphicsItem`, or `None`."""
+        return self._port_items.get(port_id)
 
     # ------------------------------------------------------------------ #
     # Mouse-drag → MoveComponentCommand (S1.9.4)
