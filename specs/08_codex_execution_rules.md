@@ -141,6 +141,56 @@ The AI agent must not assume existing code is the final architecture if it confl
 
 Legacy code may be wrapped, migrated, or isolated, but not used to justify architectural regression.
 
+### 3.4 Conflict Classification
+
+When the conflict rule in §3.2 fires, classify the conflict before resolving it. The three types govern different resolution paths; conflating them produces silent drift (treating a real ambiguity as a doc error and editing the spec on agent authority) or unnecessary user-interrupt churn (treating an obvious doc error as an ambiguity and pinging the user when no decision is actually needed).
+
+#### Type 1 — Documentation Error
+
+Two documents make contradictory statements about the same fact, and one of them is demonstrably wrong (typically the lower-priority document drifted away from a higher-priority canonical statement, or one section of a single document was updated without its sibling).
+
+**Resolution**: doc-only fix. Update the wrong document to match the canonical statement. No code change is needed — the architecture was already correctly described in one of the two documents; only the drifted copy needs correction.
+
+**Authority used**: the §3.1 priority table identifies the canonical statement; the lower-priority (or drifted) document is the one fixed.
+
+**Example**: `06 §5.3` once listed `WorkspaceModel`, `GraphValidator`, `Connection`, and `ValidationReport` under `shared/graph`, contradicting `06 §4.2` and `tests/architecture/test_module_boundaries.py`. The §5.3 listing was the error; the fix corrected §5.3 to list only `SystemGraph` / `ImplicitNode` / `PortRef` and added an "Owned elsewhere" note pointing at §4.2.
+
+#### Type 2 — Genuine Ambiguity
+
+The specs are silent or vague on a point; a judgment call is needed. Neither side of the conflict is wrong — the conflict exists because the spec does not yet cover this case.
+
+**Resolution**: stop and ask the user per §11.3. Do NOT pick a side on the agent's own authority. Surface the gap, summarize the candidate interpretations, and ask for direction. If the resolution touches ownership, schema, artifacts, or stage order, the §3.2 escalation rule applies and the answer should land as either a spec amendment or an ADR.
+
+**Example**: `01 §6` schema listed `ComponentDefinition` fields but did not explicitly include `physical_attributes`; `02 §11.3` separately referenced "physical attributes ... declared in the ComponentDefinition". S1.B.1d treated this as a Type-2 ambiguity, surfaced the gap, and added the field under explicit user authority.
+
+#### Type 3 — Spec / Code / Intent Divergence
+
+The spec says X, the code does Y, and the user's stated intent in the current task is Z. The three are not aligned.
+
+**Resolution**: the §3.1 priority table is authoritative — explicit user instruction (priority 1) outranks specs (priorities 2–9), which outrank existing code (priority 11). When user intent matches the spec, update the code. When user intent contradicts the spec, either the spec must be amended (preferred when intent is durable) or the deviation must be documented as a scoped exception (when intent is local to the current task). Existing code does not get a vote.
+
+**Example**: in S1.B.1d the user explicitly asked for `WorkspaceModel(registry=...)` to remain optional (decision A1) so the S1.3 test suite continued to construct registry-less models. Spec was silent on the constructor signature; the implementation landed under priority-1 user authority with a docstring note that the registry-backed entrypoint requires the wired registry while the legacy explicit-kwarg path stays usable.
+
+#### Classification Decision Tree
+
+```
+1. Does another spec, ADR, or test source state the canonical fact?
+   yes → Type 1: doc-only fix to the drifted document
+   no  → continue
+
+2. Is the spec actually silent or vague on this point (rather than
+   just terse)?
+   yes → Type 2: stop and ask per §11.3
+   no  → continue
+
+3. Is the current task's explicit user instruction the source of the
+   tension (rather than two equally-authoritative documents)?
+   yes → Type 3: §3.1 priority order resolves it; document the
+         deviation or amend the spec
+```
+
+The agent must classify before acting. Misclassification — for example, editing a spec section to match an undocumented user preference (Type 3 mistreated as Type 1), or pinging the user every time two specs disagree without first checking whether one is obviously the canonical source (Type 1 mistreated as Type 2) — is itself a process failure.
+
 ---
 
 ## 4. Mandatory Implementation Order
