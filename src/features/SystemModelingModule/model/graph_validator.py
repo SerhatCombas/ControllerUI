@@ -48,10 +48,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from shared.registry.parameter_validator import ParameterValidator
+
 from .validation_report import ValidationIssue, ValidationReport
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
+
+    from shared.registry import ComponentRegistry
 
     from .component_instance import ComponentInstance
     from .connection import Connection, PortRef
@@ -190,6 +194,139 @@ class GraphValidator:
 
         return ValidationReport(issues=tuple(issues))
 
+    def validate_workspace(
+        self,
+        *,
+        components: Mapping[str, ComponentInstance],
+        connections: Iterable[Connection],
+        registry: ComponentRegistry | None,
+    ) -> ValidationReport:
+        """Validate the full workspace state.
+
+        Implements the Phase-1 workspace-level rules from
+        `02 §20`:
+
+        1. **Required ports must be connected** (`02 §20.1`):
+           every `PortDefinition` with `required=True` on a
+           placed component must appear as either endpoint of
+           at least one connection. Missing connection → warning
+           (`02 §20.5`: warnings do not block editing).
+        2. **Domain reference rule** (`02 §20.4`): each domain
+           that has any placed component must have at least one
+           reference component:
+             * `electrical_analog` → `Ground Electric`
+             * `mechanical_translational` → `Fixed`
+           Missing reference → error.
+        3. **Parameter validation** (`02 §9.4`): each placed
+           component's parameters must satisfy the rules from
+           `ParameterValidator` (type, required, min/max, enum,
+           unit). Each `ParameterValidator` error becomes one
+           error-severity `ValidationIssue`.
+
+        Empty workspace returns an empty report — no rules
+        apply when there are no components.
+
+        Args:
+            components: Snapshot of `component_id` →
+                `ComponentInstance`. Read-only iteration.
+            connections: Snapshot of `Connection` records.
+                Iterated once for the required-port check.
+            registry: `ComponentRegistry` used to resolve each
+                component's `PortDefinition` and
+                `ParameterDefinition` tuples. When `None`, the
+                required-port and parameter rules cannot run
+                (no definitions available) and are silently
+                skipped — the domain-reference rule still runs
+                because it reads instance fields directly.
+
+        Returns:
+            `ValidationReport` carrying every issue discovered.
+            Empty when the workspace is clean (no required-port
+            warnings, all domain references present, all
+            parameters valid).
+        """
+        issues: list[ValidationIssue] = []
+        connection_tuple = tuple(connections)
+
+        # Rule 1: required ports must be connected (registry-dependent).
+        if registry is not None:
+            for component_id, instance in components.items():
+                if not registry.has(instance.definition_id):
+                    continue
+                definition = registry.get(instance.definition_id)
+                for port_def in definition.ports:
+                    if not port_def.required:
+                        continue
+                    if not _port_is_connected(component_id, port_def.id, connection_tuple):
+                        issues.append(
+                            _issue_dangling_required_port(
+                                component_id, port_def.id, instance.display_name
+                            )
+                        )
+
+        # Rule 2: domain reference (registry-independent — reads
+        # instance.domain and instance.definition_id directly).
+        domains_present: set[str] = {inst.domain for inst in components.values()}
+        if "electrical_analog" in domains_present and not _has_definition(
+            components, _GROUND_DEFINITION_ID
+        ):
+            issues.append(_issue_missing_ground_reference())
+        if "mechanical_translational" in domains_present and not _has_definition(
+            components, _FIXED_DEFINITION_ID
+        ):
+            issues.append(_issue_missing_fixed_reference())
+
+        # Rule 3: parameter validation (registry-dependent).
+        if registry is not None:
+            param_validator = ParameterValidator()
+            for component_id, instance in components.items():
+                if not registry.has(instance.definition_id):
+                    continue
+                definition = registry.get(instance.definition_id)
+                for param_def in definition.parameters:
+                    # Use the instance value if present; otherwise
+                    # validate the definition default (catches
+                    # invalid defaults at schema-load time too).
+                    value = instance.parameters.get(param_def.id, param_def.default)
+                    errors = param_validator.validate(param_def, value)
+                    for index, error_text in enumerate(errors):
+                        issues.append(
+                            _issue_invalid_parameter(component_id, param_def.id, index, error_text)
+                        )
+
+        return ValidationReport(issues=tuple(issues))
+
+
+# ---------------------------------------------------------------------- #
+# Workspace-rule constants
+# ---------------------------------------------------------------------- #
+
+
+_GROUND_DEFINITION_ID = "electrical.analog.components.ground"
+_FIXED_DEFINITION_ID = "mechanics.translational.components.fixed"
+
+
+def _has_definition(
+    components: Mapping[str, ComponentInstance],
+    definition_id: str,
+) -> bool:
+    """Return True if any placed component matches `definition_id`."""
+    return any(inst.definition_id == definition_id for inst in components.values())
+
+
+def _port_is_connected(
+    component_id: str,
+    port_id: str,
+    connections: Iterable[Connection],
+) -> bool:
+    """Return True if `(component_id, port_id)` is either endpoint of any connection."""
+    for conn in connections:
+        if (conn.source.component_id == component_id and conn.source.port_id == port_id) or (
+            conn.target.component_id == component_id and conn.target.port_id == port_id
+        ):
+            return True
+    return False
+
 
 # ---------------------------------------------------------------------- #
 # Issue factories — keep the validator method body readable and the
@@ -199,6 +336,107 @@ class GraphValidator:
 # debounced revalidations per `02 §20.6` so subscribers can diff
 # reports against prior emissions.
 # ---------------------------------------------------------------------- #
+
+
+def _issue_dangling_required_port(
+    component_id: str,
+    port_id: str,
+    display_name: str,
+) -> ValidationIssue:
+    """Build the issue for `02 §20.1` dangling required port (warning).
+
+    Code is `warning.validation.unused_port` per `11 §7.7`.
+    """
+    return ValidationIssue(
+        issue_id=f"warning.validation.unused_port:{component_id}:{port_id}",
+        severity="warning",
+        code="warning.validation.unused_port",
+        message=(f"required port '{port_id}' on '{display_name}' is not connected"),
+        subject_kind="component",
+        subject_id=component_id,
+        context={"port_id": port_id},
+    )
+
+
+def _issue_missing_ground_reference() -> ValidationIssue:
+    """Build the issue for `02 §20.4` missing electrical ground reference.
+
+    Code is `error.validation.missing_ground` per `11 §7.7`.
+    """
+    return ValidationIssue(
+        issue_id="error.validation.missing_ground",
+        severity="error",
+        code="error.validation.missing_ground",
+        message=("electrical model requires at least one Ground Electric component"),
+        subject_kind="workspace",
+        subject_id=None,
+        context={"domain": "electrical_analog"},
+    )
+
+
+def _issue_missing_fixed_reference() -> ValidationIssue:
+    """Build the issue for `02 §20.4` missing mechanical fixed reference.
+
+    Code is `error.validation.missing_fixed_reference` per `11 §7.7`.
+    """
+    return ValidationIssue(
+        issue_id="error.validation.missing_fixed_reference",
+        severity="error",
+        code="error.validation.missing_fixed_reference",
+        message=("mechanical translational model requires at least one Fixed component"),
+        subject_kind="workspace",
+        subject_id=None,
+        context={"domain": "mechanical_translational"},
+    )
+
+
+# Map `ParameterValidator`'s plain-text errors back to the
+# `11 §7.3` catalog codes. The mapping is message-pattern based —
+# a structured ParameterValidator return would be cleaner but is
+# scope-creep for S1.6a; the patterns are stable text fragments
+# from `parameter_validator.py`'s issue strings.
+#
+# TODO(S1.6.future): refactor `ParameterValidator.validate` to
+# return `(code, message)` tuples so this mapping table goes
+# away.
+
+
+def _classify_parameter_error(text: str) -> str:
+    """Map a `ParameterValidator` error string to a `11 §7.3` code."""
+    if "is required but no value was provided" in text:
+        return "error.parameter.required_missing"
+    if "expects type" in text:
+        return "error.parameter.type_mismatch"
+    if "below minimum" in text or "above maximum" in text:
+        return "error.parameter.out_of_range"
+    if "is not in" in text and "allowed values" in text:
+        return "error.parameter.invalid_enum"
+    if "unit" in text and "does not match" in text:
+        return "error.parameter.unit_mismatch"
+    return "error.parameter.type_mismatch"
+
+
+def _issue_invalid_parameter(
+    component_id: str,
+    param_id: str,
+    rule_index: int,
+    detail: str,
+) -> ValidationIssue:
+    """Build the issue for `02 §9.4` parameter validation failure.
+
+    Code classification follows `11 §7.3` based on message pattern.
+    `rule_index` disambiguates multiple issues on the same param.
+    """
+    code = _classify_parameter_error(detail)
+    return ValidationIssue(
+        issue_id=f"{code}:{component_id}:{param_id}:{rule_index}",
+        severity="error",
+        code=code,
+        message=detail,
+        subject_kind="component",
+        subject_id=component_id,
+        context={"param_id": param_id, "rule_index": rule_index},
+    )
 
 
 def _issue_self_connection(ref: PortRef) -> ValidationIssue:
