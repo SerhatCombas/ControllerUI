@@ -1145,6 +1145,78 @@ class WorkspaceModel(QObject):
         else:
             self.connectionRemoved.emit(connection_id)
 
+    def restore_connection(self, connection: Connection) -> None:
+        """Re-insert a previously-removed connection verbatim.
+
+        Symmetric counterpart to `restore_component` (S1.7.1).
+        Introduced in S1.7.3 for `DeleteComponentCommand`'s undo
+        path: the command captures the full `Connection` instances
+        cascaded out by a component deletion and re-inserts them on
+        undo with their original `con_<ULID>` ids — so downstream
+        references (validation reports, future graph caches) keep
+        the same identity across delete/undo cycles per ADR-002 /
+        `02 §8`.
+
+        Validation order:
+
+        1. Argument validation: `connection.id` must not collide
+           with an existing connection (collisions indicate a
+           command-sequencing logic bug, same as
+           `restore_component`).
+        2. Mutation + `_set_dirty()` + signal emission (or batch
+           record), identical to `add_connection`.
+
+        Args:
+            connection: A previously-captured `Connection` with its
+                original id. The dataclass is frozen, so this method
+                does not need to defensively copy.
+
+        Raises:
+            ValueError: `connection.id` collides with an existing
+                connection.
+
+        See Also:
+            `restore_component` (S1.7.1), ADR-002 (id stability),
+            `02 §29.3` (round-trip identity).
+        """
+        if connection.id in self._connections:
+            raise ValueError(f"connection id collision on restore: '{connection.id}'")
+        self._connections[connection.id] = connection
+        self._set_dirty()
+        if self._batch_builder is not None:
+            self._batch_builder.record_connection_added(connection.id)
+        else:
+            self.connectionAdded.emit(connection.id)
+
+    def connections_for_component(self, component_id: str) -> tuple[Connection, ...]:
+        """Return all connections referencing `component_id` on either endpoint.
+
+        Used by `DeleteComponentCommand` to discover the cascade
+        set; will also serve future validators and project export.
+        Iteration order matches the connections dict (Python dict
+        insertion order per the 3.7+ guarantee), so callers get a
+        stable replay order on undo.
+
+        Does NOT validate that `component_id` exists in the model —
+        an unknown id simply yields an empty tuple. Callers that
+        need an existence check should perform it separately
+        (`component_id in model.components`).
+
+        Args:
+            component_id: Target component id.
+
+        Returns:
+            Tuple of `Connection` records whose `source.component_id`
+            or `target.component_id` equals `component_id`. Frozen
+            dataclasses are safe to share; callers may store the
+            tuple for replay without defensive copying.
+        """
+        return tuple(
+            conn
+            for conn in self._connections.values()
+            if conn.source.component_id == component_id or conn.target.component_id == component_id
+        )
+
     def update_connection(
         self,
         connection_id: str,

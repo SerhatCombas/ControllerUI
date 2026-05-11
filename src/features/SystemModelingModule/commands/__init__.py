@@ -16,7 +16,7 @@ Phase 1 commands (populated incrementally across S1.7.x):
 * `MoveComponentCommand` — S1.7.2 ✓
 * `RotateComponentCommand` — S1.7.2 ✓
 * `ChangeParameterCommand` — S1.7.2 ✓
-* `DeleteComponentCommand` — S1.7.3 (with connection cascade)
+* `DeleteComponentCommand` — S1.7.3 ✓ (with connection cascade)
 * `AddConnectionCommand` — S1.7.4 (calls GraphValidator first)
 * `DeleteConnectionCommand` — S1.7.4
 * `ModifyConnectionCommand` — S1.7.4
@@ -40,6 +40,7 @@ References:
 
 from .add_component_command import AddComponentCommand
 from .change_parameter_command import ChangeParameterCommand
+from .delete_component_command import DeleteComponentCommand
 from .move_component_command import MoveComponentCommand
 from .rotate_component_command import RotateComponentCommand
 from .workspace_command_stack import WorkspaceCommand, WorkspaceCommandStack
@@ -47,6 +48,7 @@ from .workspace_command_stack import WorkspaceCommand, WorkspaceCommandStack
 __all__ = [
     "AddComponentCommand",
     "ChangeParameterCommand",
+    "DeleteComponentCommand",
     "MoveComponentCommand",
     "RotateComponentCommand",
     "WorkspaceCommand",
