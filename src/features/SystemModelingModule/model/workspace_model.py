@@ -95,6 +95,8 @@ from typing import TYPE_CHECKING, Any, Final
 
 from PySide6.QtCore import QObject, QPointF, Signal
 
+from shared.utils import logging_events as events
+
 from .component_instance import (
     ComponentInstance,
     PhysicalAttributes,
@@ -664,6 +666,15 @@ class WorkspaceModel(QObject):
         )
         self._components[instance.id] = instance
         self._set_dirty()
+        logger.info(
+            "Component added",
+            extra={
+                "event": events.WORKSPACE_COMPONENT_ADDED,
+                "component_id": instance.id,
+                "display_id": instance.display_id,
+                "definition_id": instance.definition_id,
+            },
+        )
         if self._batch_builder is not None:
             self._batch_builder.record_component_added(instance.id)
         else:
@@ -776,6 +787,15 @@ class WorkspaceModel(QObject):
         )
         self._components[instance.id] = instance
         self._set_dirty()
+        logger.info(
+            "Component added",
+            extra={
+                "event": events.WORKSPACE_COMPONENT_ADDED,
+                "component_id": instance.id,
+                "display_id": instance.display_id,
+                "definition_id": instance.definition_id,
+            },
+        )
         if self._batch_builder is not None:
             self._batch_builder.record_component_added(instance.id)
         else:
@@ -788,6 +808,13 @@ class WorkspaceModel(QObject):
             raise KeyError(component_id)
         del self._components[component_id]
         self._set_dirty()
+        logger.info(
+            "Component removed",
+            extra={
+                "event": events.WORKSPACE_COMPONENT_REMOVED,
+                "component_id": component_id,
+            },
+        )
         if self._batch_builder is not None:
             self._batch_builder.record_component_removed(component_id)
         else:
@@ -832,6 +859,15 @@ class WorkspaceModel(QObject):
             raise ValueError(f"component id collision on restore: '{instance.id}'")
         self._components[instance.id] = instance
         self._set_dirty()
+        logger.info(
+            "Component added",
+            extra={
+                "event": events.WORKSPACE_COMPONENT_ADDED,
+                "component_id": instance.id,
+                "display_id": instance.display_id,
+                "definition_id": instance.definition_id,
+            },
+        )
         if self._batch_builder is not None:
             self._batch_builder.record_component_added(instance.id)
         else:
@@ -852,6 +888,15 @@ class WorkspaceModel(QObject):
         )
         self._components[component_id] = new_instance
         self._set_dirty()
+        logger.info(
+            "Component moved",
+            extra={
+                "event": events.WORKSPACE_COMPONENT_MOVED,
+                "component_id": component_id,
+                "new_x": new_pos.x(),
+                "new_y": new_pos.y(),
+            },
+        )
         if self._batch_builder is not None:
             self._batch_builder.record_component_changed(component_id)
         else:
@@ -873,6 +918,14 @@ class WorkspaceModel(QObject):
         )
         self._components[component_id] = new_instance
         self._set_dirty()
+        logger.info(
+            "Component rotated",
+            extra={
+                "event": events.WORKSPACE_COMPONENT_ROTATED,
+                "component_id": component_id,
+                "new_rotation": canonical,
+            },
+        )
         if self._batch_builder is not None:
             self._batch_builder.record_component_changed(component_id)
         else:
@@ -959,6 +1012,14 @@ class WorkspaceModel(QObject):
         )
         self._components[component_id] = new_instance
         self._set_dirty()
+        logger.info(
+            "Parameter changed",
+            extra={
+                "event": events.WORKSPACE_PARAMETER_CHANGED,
+                "component_id": component_id,
+                "param_name": param_name,
+            },
+        )
         if self._batch_builder is not None:
             self._batch_builder.record_component_changed(component_id)
         else:
@@ -1012,6 +1073,14 @@ class WorkspaceModel(QObject):
         )
         self._components[component_id] = new_instance
         self._set_dirty()
+        logger.info(
+            "Parameter unset",
+            extra={
+                "event": events.WORKSPACE_PARAMETER_CHANGED,
+                "component_id": component_id,
+                "param_name": param_name,
+            },
+        )
         if self._batch_builder is not None:
             self._batch_builder.record_component_changed(component_id)
         else:
@@ -1061,6 +1130,14 @@ class WorkspaceModel(QObject):
         )
         self._components[component_id] = new_instance
         self._set_dirty()
+        logger.info(
+            "Custom label changed",
+            extra={
+                "event": events.WORKSPACE_COMPONENT_CHANGED,
+                "component_id": component_id,
+                "field": "custom_label",
+            },
+        )
         if self._batch_builder is not None:
             self._batch_builder.record_component_changed(component_id)
         else:
@@ -1080,6 +1157,15 @@ class WorkspaceModel(QObject):
         )
         self._components[component_id] = new_instance
         self._set_dirty()
+        logger.info(
+            "Locked flag changed",
+            extra={
+                "event": events.WORKSPACE_COMPONENT_CHANGED,
+                "component_id": component_id,
+                "field": "locked",
+                "locked": locked,
+            },
+        )
         if self._batch_builder is not None:
             self._batch_builder.record_component_changed(component_id)
         else:
@@ -1103,6 +1189,14 @@ class WorkspaceModel(QObject):
         )
         self._components[component_id] = new_instance
         self._set_dirty()
+        logger.info(
+            "Tags changed",
+            extra={
+                "event": events.WORKSPACE_COMPONENT_CHANGED,
+                "component_id": component_id,
+                "field": "tags",
+            },
+        )
         if self._batch_builder is not None:
             self._batch_builder.record_component_changed(component_id)
         else:
@@ -1127,6 +1221,14 @@ class WorkspaceModel(QObject):
         )
         self._components[component_id] = new_instance
         self._set_dirty()
+        logger.info(
+            "Annotations changed",
+            extra={
+                "event": events.WORKSPACE_COMPONENT_CHANGED,
+                "component_id": component_id,
+                "field": "annotations",
+            },
+        )
         if self._batch_builder is not None:
             self._batch_builder.record_component_changed(component_id)
         else:
@@ -1155,6 +1257,17 @@ class WorkspaceModel(QObject):
         )
         self._connections[connection.id] = connection
         self._set_dirty()
+        logger.info(
+            "Connection added",
+            extra={
+                "event": events.WORKSPACE_CONNECTION_ADDED,
+                "connection_id": connection.id,
+                "source_component_id": connection.source.component_id,
+                "source_port_id": connection.source.port_id,
+                "target_component_id": connection.target.component_id,
+                "target_port_id": connection.target.port_id,
+            },
+        )
         if self._batch_builder is not None:
             self._batch_builder.record_connection_added(connection.id)
         else:
@@ -1167,6 +1280,13 @@ class WorkspaceModel(QObject):
             raise KeyError(connection_id)
         del self._connections[connection_id]
         self._set_dirty()
+        logger.info(
+            "Connection removed",
+            extra={
+                "event": events.WORKSPACE_CONNECTION_REMOVED,
+                "connection_id": connection_id,
+            },
+        )
         if self._batch_builder is not None:
             self._batch_builder.record_connection_removed(connection_id)
         else:
@@ -1210,6 +1330,17 @@ class WorkspaceModel(QObject):
             raise ValueError(f"connection id collision on restore: '{connection.id}'")
         self._connections[connection.id] = connection
         self._set_dirty()
+        logger.info(
+            "Connection added",
+            extra={
+                "event": events.WORKSPACE_CONNECTION_ADDED,
+                "connection_id": connection.id,
+                "source_component_id": connection.source.component_id,
+                "source_port_id": connection.source.port_id,
+                "target_component_id": connection.target.component_id,
+                "target_port_id": connection.target.port_id,
+            },
+        )
         if self._batch_builder is not None:
             self._batch_builder.record_connection_added(connection.id)
         else:
@@ -1269,6 +1400,13 @@ class WorkspaceModel(QObject):
         )
         self._connections[connection_id] = new_instance
         self._set_dirty()
+        logger.info(
+            "Connection modified",
+            extra={
+                "event": events.WORKSPACE_CONNECTION_MODIFIED,
+                "connection_id": connection_id,
+            },
+        )
         if self._batch_builder is not None:
             self._batch_builder.record_connection_changed(connection_id)
         else:
