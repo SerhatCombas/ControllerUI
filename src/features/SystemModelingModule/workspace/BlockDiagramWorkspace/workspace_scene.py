@@ -5,12 +5,16 @@ workspace model: it subscribes to every model mutation signal
 and translates each into create / update / remove operations on
 graphics items.
 
-S1.9.1 scope: scene skeleton + grid. All model-mutation slots
-are present and connected but render no items beyond the grid.
-S1.9.2 will fill in `_on_component_added` /
-`_on_component_removed` / `_on_component_moved` /
-`_on_component_rotated` with `ComponentGraphicsItem` creation
-and synchronization. S1.9.5 will add connection items.
+S1.9.2 scope: component lifecycle wired through
+`ComponentGraphicsItem`. `_on_component_added` mints an item
+(short-name resolution via the model's registry when wired),
+`_on_component_removed` cleans it up, `_on_component_moved` /
+`_on_component_rotated` push position/rotation into the existing
+item, `_on_component_changed` refreshes cached display fields.
+`_on_model_changed` (batch path) replays all four operations
+from the change_set in one pass.
+
+Connection items remain placeholders — they land in S1.9.5.
 
 Design rules (per ADR-003 + spec/07 §7.13):
 
@@ -46,11 +50,15 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import QGraphicsScene
 
+from .component_graphics_item import ComponentGraphicsItem
 from .grid_background_item import GridBackgroundItem
 
 if TYPE_CHECKING:
     from PySide6.QtCore import QObject, QPointF
 
+    from features.SystemModelingModule.model.component_instance import (
+        ComponentInstance,
+    )
     from features.SystemModelingModule.model.workspace_change_set import (
         WorkspaceChangeSet,
     )
@@ -83,10 +91,10 @@ class WorkspaceScene(QGraphicsScene):
         """Construct, install the grid, and wire model signals."""
         super().__init__(parent)
         self._model: WorkspaceModel = model
-        # Internal mirror dicts. Populated by signal slots in
-        # later S1.9.x sub-commits; declared here so the contract
-        # is stable from the start.
-        self._component_items: dict[str, object] = {}
+        # Internal mirror dicts. `_component_items` is populated
+        # by S1.9.2's signal slots; `_connection_items` lands in
+        # S1.9.5.
+        self._component_items: dict[str, ComponentGraphicsItem] = {}
         self._connection_items: dict[str, object] = {}
         # Install the grid first so it sits at the back of the
         # stacking order via its `GRID_Z_VALUE`.
@@ -104,6 +112,21 @@ class WorkspaceScene(QGraphicsScene):
     def grid_item(self) -> GridBackgroundItem:
         """Read-only access to the grid background item."""
         return self._grid_item
+
+    def _resolve_label(self, instance: ComponentInstance) -> str:
+        """Resolve the on-canvas label for an instance.
+
+        Prefers the `ComponentDefinition.short_name` from the
+        wired registry; falls back to the empty string when the
+        registry is not wired, the definition is missing, or the
+        definition does not declare a `short_name`. The
+        `ComponentGraphicsItem` constructor handles the empty
+        case by deriving a placeholder from `display_name`.
+        """
+        registry = self._model.registry
+        if registry is None or not registry.has(instance.definition_id):
+            return ""
+        return registry.get(instance.definition_id).short_name
 
     def _connect_model_signals(self) -> None:
         """Wire the 10 model signals the scene cares about.
@@ -132,36 +155,51 @@ class WorkspaceScene(QGraphicsScene):
         m.modelChanged.connect(self._on_model_changed)
 
     # ------------------------------------------------------------------ #
-    # Component-related slots (S1.9.2 fills these in)
+    # Component-related slots (S1.9.2)
     # ------------------------------------------------------------------ #
 
     def _on_component_added(self, component_id: str) -> None:
-        """Handle a new component placement.
+        """Mint a `ComponentGraphicsItem` for the new component.
 
-        S1.9.1: placeholder — logs the event. S1.9.2 will mint a
-        `ComponentGraphicsItem` for the new component, position
-        it from `model.components[component_id].position`, and
-        register it in `_component_items`.
+        Reads the fresh `ComponentInstance` from the model,
+        resolves the on-canvas label via the registry (when
+        wired), and registers the item in `_component_items`.
+        If the id is already in the dict, this is a defensive
+        no-op — the addition was already handled (e.g., by a
+        replay of the same signal).
         """
-        logger.debug("componentAdded (S1.9.2 will render): %s", component_id)
+        if component_id in self._component_items:
+            return
+        instance = self._model.components.get(component_id)
+        if instance is None:
+            logger.warning(
+                "componentAdded fired for unknown id %s; ignoring", component_id
+            )
+            return
+        label = self._resolve_label(instance)
+        item = ComponentGraphicsItem(instance, label=label)
+        self.addItem(item)
+        self._component_items[component_id] = item
 
     def _on_component_removed(self, component_id: str) -> None:
-        """Handle a component removal.
-
-        S1.9.1: placeholder. S1.9.2 will look up the item in
-        `_component_items`, remove it from the scene, and drop
-        the dict entry.
-        """
-        logger.debug("componentRemoved (S1.9.2 will derender): %s", component_id)
+        """Remove the `ComponentGraphicsItem` for a deleted component."""
+        item = self._component_items.pop(component_id, None)
+        if item is not None:
+            self.removeItem(item)
 
     def _on_component_changed(self, component_id: str) -> None:
-        """Handle a component property edit.
-
-        S1.9.1: placeholder. S1.9.2 will re-read the instance and
-        update the corresponding `ComponentGraphicsItem` (label,
-        visual variant, locked state, etc.).
-        """
-        logger.debug("componentChanged (S1.9.2 will update): %s", component_id)
+        """Refresh the item's cached display fields from the new instance."""
+        item = self._component_items.get(component_id)
+        if item is None:
+            return
+        instance = self._model.components.get(component_id)
+        if instance is None:
+            return
+        # The label could change in principle (if a future
+        # `componentChanged` payload carried a definition swap),
+        # but in Phase 1 the short_name is fixed for a given
+        # `definition_id`. Pass `None` to keep the existing label.
+        item.update_from_instance(instance, label=None)
 
     def _on_component_moved(
         self,
@@ -169,18 +207,15 @@ class WorkspaceScene(QGraphicsScene):
         old_pos: QPointF,
         new_pos: QPointF,
     ) -> None:
-        """Handle a component position change.
-
-        S1.9.1: placeholder. S1.9.2 will move the corresponding
-        `ComponentGraphicsItem` to `new_pos` and S1.9.5 will
-        update any connected wire endpoints.
-        """
-        logger.debug(
-            "componentMoved (S1.9.2 will reposition): %s %s -> %s",
-            component_id,
-            old_pos,
-            new_pos,
-        )
+        """Push the new position into the item."""
+        item = self._component_items.get(component_id)
+        if item is None:
+            return
+        item.setPos(new_pos)
+        # `old_pos` is unused at the view layer — the item's
+        # current position is the source of truth for any
+        # forthcoming wire-endpoint updates (S1.9.5).
+        _ = old_pos
 
     def _on_component_rotated(
         self,
@@ -188,17 +223,12 @@ class WorkspaceScene(QGraphicsScene):
         old_rotation: float,
         new_rotation: float,
     ) -> None:
-        """Handle a component rotation change.
-
-        S1.9.1: placeholder. S1.9.2 will set the item's rotation
-        and S1.9.5 will update port visual positions.
-        """
-        logger.debug(
-            "componentRotated (S1.9.2 will reorient): %s %s -> %s",
-            component_id,
-            old_rotation,
-            new_rotation,
-        )
+        """Push the new rotation into the item."""
+        item = self._component_items.get(component_id)
+        if item is None:
+            return
+        item.setRotation(new_rotation)
+        _ = old_rotation  # unused at the view layer
 
     # ------------------------------------------------------------------ #
     # Connection-related slots (S1.9.5 fills these in)
@@ -243,22 +273,42 @@ class WorkspaceScene(QGraphicsScene):
     def _on_model_changed(self, change_set: WorkspaceChangeSet) -> None:
         """Handle a batched mutation (ADR-019).
 
-        S1.9.1: placeholder — logs the diff summary. Later
-        sub-commits may choose to override fine-grained slot
-        dispatch inside a batch and re-render directly from the
-        change_set for performance.
+        Per ADR-019 the fine-grained signals are suppressed
+        inside a `model.batch()`; the scene must drive its
+        component-item lifecycle from the change_set instead.
+        Connection items (S1.9.5) will get the same treatment.
+
+        Order within the batch:
+
+        1. Remove items for `removed_components` (cleanup before
+           additions so any id collision in a future
+           remove-then-add-with-same-id flow is handled
+           correctly).
+        2. Add items for `added_components`.
+        3. Update items for `changed_components` — both
+           position/rotation (re-read from the instance) and
+           cached display fields.
         """
-        logger.debug(
-            "modelChanged (S1.9.x batch render): "
-            "added_components=%d removed_components=%d "
-            "added_connections=%d removed_connections=%d "
-            "reset=%s",
-            len(change_set.added_components),
-            len(change_set.removed_components),
-            len(change_set.added_connections),
-            len(change_set.removed_connections),
-            change_set.reset_required,
-        )
+        if change_set.reset_required:
+            # The `modelReset` signal already fired the full
+            # cleanup path inside the batch; nothing more to do.
+            return
+        for cid in change_set.removed_components:
+            self._on_component_removed(cid)
+        for cid in change_set.added_components:
+            self._on_component_added(cid)
+        for cid in change_set.changed_components:
+            instance = self._model.components.get(cid)
+            item = self._component_items.get(cid)
+            if instance is None or item is None:
+                continue
+            # Re-sync position + rotation in case the change
+            # batch combined move/rotate with other edits — the
+            # fine-grained slots were suppressed, so the item
+            # has not been told yet.
+            item.setPos(instance.position[0], instance.position[1])
+            item.setRotation(instance.rotation)
+            item.update_from_instance(instance, label=None)
 
 
 __all__ = ["WorkspaceScene"]

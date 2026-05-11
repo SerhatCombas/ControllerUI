@@ -1,18 +1,20 @@
-"""Unit tests for `WorkspaceScene` (S1.9.1).
+"""Unit tests for `WorkspaceScene` after S1.9.2.
 
-S1.9.1 covers the scene skeleton and signal wiring. Component /
-connection rendering lands in S1.9.2 / S1.9.5; these tests
-verify the foundation:
+S1.9.1 wired the model signals to placeholder slots; S1.9.2 fills
+them in with real `ComponentGraphicsItem` lifecycle. Tests cover:
 
 * construction binds the model and installs the grid
-* all 10 mutation / structural signals connect without raising
-  (verified by firing each signal and confirming the matching
-  log entry — slots are placeholders that log only)
-* `modelReset` clears the internal mirror dicts (empty in
-  S1.9.1; the test exercises the iteration to lock in the
-  grid-retention guarantee)
-* the grid item z-value sits below component default z=0 so
-  later sub-commits don't fight a layering bug
+* `componentAdded` mints an item; `componentRemoved` cleans it up
+* `componentMoved` / `componentRotated` push the new transform
+  into the existing item
+* `componentChanged` refreshes cached display fields
+* `modelChanged` (batch) replays the diff in one pass
+* `modelReset` clears all component / connection items but keeps
+  the grid
+
+Connection-related slots remain placeholders until S1.9.5;
+`test_scene_connection_added_signal_reaches_scene_slot` exercises
+the wiring without expecting real items.
 
 References:
 ----------
@@ -24,8 +26,12 @@ from __future__ import annotations
 import logging
 
 import pytest
+from PySide6.QtCore import QPointF
 
 from features.SystemModelingModule.model.workspace_model import WorkspaceModel
+from features.SystemModelingModule.workspace.BlockDiagramWorkspace.component_graphics_item import (
+    ComponentGraphicsItem,
+)
 from features.SystemModelingModule.workspace.BlockDiagramWorkspace.grid_background_item import (
     GRID_Z_VALUE,
     GridBackgroundItem,
@@ -46,6 +52,11 @@ def model() -> WorkspaceModel:
     return WorkspaceModel(registry=ComponentRegistry(BUILTIN_COMPONENT_DEFINITIONS))
 
 
+# ---------------------------------------------------------------------- #
+# Construction (unchanged from S1.9.1)
+# ---------------------------------------------------------------------- #
+
+
 @pytest.mark.unit
 def test_scene_constructs_with_model(model: WorkspaceModel) -> None:
     """`WorkspaceScene(model)` stores the model and installs the grid."""
@@ -53,7 +64,6 @@ def test_scene_constructs_with_model(model: WorkspaceModel) -> None:
 
     assert scene.model is model
     assert isinstance(scene.grid_item, GridBackgroundItem)
-    # Grid is in the scene's item list.
     assert scene.grid_item in scene.items()
 
 
@@ -65,44 +75,125 @@ def test_scene_grid_item_z_below_components(model: WorkspaceModel) -> None:
     assert scene.grid_item.zValue() == GRID_Z_VALUE
 
 
-@pytest.mark.unit
-def test_scene_component_added_signal_reaches_scene_slot(
-    model: WorkspaceModel,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Firing `componentAdded` triggers the scene's placeholder slot.
+# ---------------------------------------------------------------------- #
+# componentAdded / componentRemoved lifecycle (S1.9.2)
+# ---------------------------------------------------------------------- #
 
-    S1.9.1 slots only log; this test verifies the connection is
-    live so S1.9.2 can replace the body without re-wiring.
+
+@pytest.mark.unit
+def test_scene_creates_component_item_on_add(model: WorkspaceModel) -> None:
+    """Adding a component to the model mints a `ComponentGraphicsItem`."""
+    scene = WorkspaceScene(model)
+
+    new_id = model.add_component_from_definition(RESISTOR_DEFINITION.id, QPointF(0.0, 0.0))
+
+    assert new_id in scene._component_items
+    item = scene._component_items[new_id]
+    assert isinstance(item, ComponentGraphicsItem)
+    assert item.component_id == new_id
+    assert item in scene.items()
+
+
+@pytest.mark.unit
+def test_scene_removes_component_item_on_remove(
+    model: WorkspaceModel,
+) -> None:
+    """Removing a component cleans up the corresponding item."""
+    scene = WorkspaceScene(model)
+    new_id = model.add_component_from_definition(RESISTOR_DEFINITION.id, QPointF(0.0, 0.0))
+    item = scene._component_items[new_id]
+
+    model.remove_component(new_id)
+
+    assert new_id not in scene._component_items
+    assert item not in scene.items()
+
+
+@pytest.mark.unit
+def test_scene_handles_component_removed_for_unknown_id(
+    model: WorkspaceModel,
+) -> None:
+    """An unknown id on `componentRemoved` is a safe no-op."""
+    scene = WorkspaceScene(model)
+
+    # Should not raise. (Direct signal emit because the model
+    # itself would have raised KeyError on remove_component.)
+    model.componentRemoved.emit("cmp_nonexistent")
+
+    assert scene._component_items == {}
+
+
+@pytest.mark.unit
+def test_scene_resolves_label_via_registry(model: WorkspaceModel) -> None:
+    """Item label uses the definition's `short_name` from the registry.
+
+    `RESISTOR_DEFINITION.short_name == "R"`, so the item should
+    render with "R" as its on-canvas label rather than the
+    fallback "Res" derived from `display_name[:3]`.
     """
-    scene = WorkspaceScene(model)  # noqa: F841 — keep alive for signal delivery
+    scene = WorkspaceScene(model)
+    new_id = model.add_component_from_definition(RESISTOR_DEFINITION.id, QPointF(0.0, 0.0))
 
-    caplog.clear()
-    with caplog.at_level(
-        logging.DEBUG,
-        logger="features.SystemModelingModule.workspace.BlockDiagramWorkspace.workspace_scene",
-    ):
-        model.componentAdded.emit("cmp_test123")
+    item = scene._component_items[new_id]
+    assert item.label == RESISTOR_DEFINITION.short_name == "R"
 
-    assert any("componentAdded" in r.getMessage() for r in caplog.records)
+
+# ---------------------------------------------------------------------- #
+# componentMoved / componentRotated propagate to the item (S1.9.2)
+# ---------------------------------------------------------------------- #
 
 
 @pytest.mark.unit
-def test_scene_component_removed_signal_reaches_scene_slot(
+def test_scene_moves_item_when_component_moved(
     model: WorkspaceModel,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """`componentRemoved` reaches the placeholder slot."""
-    scene = WorkspaceScene(model)  # noqa: F841
+    """A `move_component` call updates the item's position."""
+    scene = WorkspaceScene(model)
+    new_id = model.add_component_from_definition(RESISTOR_DEFINITION.id, QPointF(0.0, 0.0))
+    item = scene._component_items[new_id]
 
-    caplog.clear()
-    with caplog.at_level(
-        logging.DEBUG,
-        logger="features.SystemModelingModule.workspace.BlockDiagramWorkspace.workspace_scene",
-    ):
-        model.componentRemoved.emit("cmp_test123")
+    model.move_component(new_id, QPointF(120.0, 80.0))
 
-    assert any("componentRemoved" in r.getMessage() for r in caplog.records)
+    assert item.pos() == QPointF(120.0, 80.0)
+
+
+@pytest.mark.unit
+def test_scene_rotates_item_when_component_rotated(
+    model: WorkspaceModel,
+) -> None:
+    """A `rotate_component` call updates the item's rotation."""
+    scene = WorkspaceScene(model)
+    new_id = model.add_component_from_definition(RESISTOR_DEFINITION.id, QPointF(0.0, 0.0))
+    item = scene._component_items[new_id]
+
+    model.rotate_component(new_id, 90.0)
+
+    assert item.rotation() == 90.0
+
+
+# ---------------------------------------------------------------------- #
+# componentChanged refreshes cached fields (S1.9.2)
+# ---------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_scene_refreshes_locked_flag_on_component_changed(
+    model: WorkspaceModel,
+) -> None:
+    """`set_locked(True)` propagates to `item.locked`."""
+    scene = WorkspaceScene(model)
+    new_id = model.add_component_from_definition(RESISTOR_DEFINITION.id, QPointF(0.0, 0.0))
+    item = scene._component_items[new_id]
+    assert item.locked is False
+
+    model.set_locked(new_id, True)
+
+    assert item.locked is True
+
+
+# ---------------------------------------------------------------------- #
+# Connection signal wiring (still placeholder — S1.9.5)
+# ---------------------------------------------------------------------- #
 
 
 @pytest.mark.unit
@@ -110,8 +201,9 @@ def test_scene_connection_added_signal_reaches_scene_slot(
     model: WorkspaceModel,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """`connectionAdded` reaches the placeholder slot."""
-    scene = WorkspaceScene(model)  # noqa: F841
+    """`connectionAdded` reaches the placeholder slot (still S1.9.5 work)."""
+    scene = WorkspaceScene(model)
+    assert scene is not None  # keep alive for the duration of the test
 
     caplog.clear()
     with caplog.at_level(
@@ -123,76 +215,54 @@ def test_scene_connection_added_signal_reaches_scene_slot(
     assert any("connectionAdded" in r.getMessage() for r in caplog.records)
 
 
-@pytest.mark.unit
-def test_scene_full_add_flow_reaches_slot(model: WorkspaceModel) -> None:
-    """End-to-end smoke: actually adding a component via the model
-    fires the signal and the scene's connection survives.
-
-    Verifies that the signal wiring isn't broken by anything
-    specific to `add_component_from_definition` (Phase 1
-    integration path used by the command stack).
-    """
-    from PySide6.QtCore import QPointF
-
-    scene = WorkspaceScene(model)  # noqa: F841
-    received: list[str] = []
-    model.componentAdded.connect(received.append)
-
-    new_id = model.add_component_from_definition(RESISTOR_DEFINITION.id, QPointF(0.0, 0.0))
-
-    # Both the scene's slot and the test's subscriber receive
-    # the same id (Qt signals fan out).
-    assert received == [new_id]
+# ---------------------------------------------------------------------- #
+# Batch (modelChanged) path (S1.9.2)
+# ---------------------------------------------------------------------- #
 
 
 @pytest.mark.unit
-def test_scene_model_reset_clears_internal_dicts(
-    model: WorkspaceModel,
-) -> None:
-    """`modelReset` clears both mirror dicts while keeping the grid."""
-    from PySide6.QtWidgets import QGraphicsRectItem
-
+def test_scene_batch_modelchanged_adds_items(model: WorkspaceModel) -> None:
+    """A batched mutation adds component items via the change_set."""
     scene = WorkspaceScene(model)
-    # S1.9.1: the mirror dicts are empty by design (S1.9.2 will
-    # populate them). The test still verifies the slot's logic
-    # by pre-seeding the dicts with real graphics items so the
-    # `removeItem(item)` call in `_on_model_reset` accepts them.
-    fake_component_item = QGraphicsRectItem()
-    fake_connection_item = QGraphicsRectItem()
-    scene.addItem(fake_component_item)
-    scene.addItem(fake_connection_item)
-    scene._component_items["cmp_pre"] = fake_component_item
-    scene._connection_items["con_pre"] = fake_connection_item
+
+    with model.batch():
+        first = model.add_component_from_definition(RESISTOR_DEFINITION.id, QPointF(0.0, 0.0))
+        second = model.add_component_from_definition(RESISTOR_DEFINITION.id, QPointF(50.0, 0.0))
+
+    assert first in scene._component_items
+    assert second in scene._component_items
+    assert scene._component_items[first].pos() == QPointF(0.0, 0.0)
+    assert scene._component_items[second].pos() == QPointF(50.0, 0.0)
+
+
+@pytest.mark.unit
+def test_scene_batch_modelchanged_removes_items(model: WorkspaceModel) -> None:
+    """A batched removal cleans up items via the change_set."""
+    scene = WorkspaceScene(model)
+    new_id = model.add_component_from_definition(RESISTOR_DEFINITION.id, QPointF(0.0, 0.0))
+    assert new_id in scene._component_items
+
+    with model.batch():
+        model.remove_component(new_id)
+
+    assert new_id not in scene._component_items
+
+
+# ---------------------------------------------------------------------- #
+# modelReset (cleanup)
+# ---------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_scene_model_reset_clears_component_items(model: WorkspaceModel) -> None:
+    """`reset()` removes all component items but keeps the grid."""
+    scene = WorkspaceScene(model)
+    model.add_component_from_definition(RESISTOR_DEFINITION.id, QPointF(0.0, 0.0))
+    model.add_component_from_definition(RESISTOR_DEFINITION.id, QPointF(50.0, 0.0))
+    assert len(scene._component_items) == 2
 
     model.reset()
 
     assert scene._component_items == {}
     assert scene._connection_items == {}
-    # Grid survives reset.
     assert scene.grid_item in scene.items()
-    # Pre-seeded fake items are no longer in the scene.
-    assert fake_component_item not in scene.items()
-    assert fake_connection_item not in scene.items()
-
-
-@pytest.mark.unit
-def test_scene_model_changed_signal_reaches_batch_slot(
-    model: WorkspaceModel,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """`modelChanged` from a real batch fires the batch slot."""
-    from PySide6.QtCore import QPointF
-
-    scene = WorkspaceScene(model)  # noqa: F841
-
-    caplog.clear()
-    with (
-        caplog.at_level(
-            logging.DEBUG,
-            logger="features.SystemModelingModule.workspace.BlockDiagramWorkspace.workspace_scene",
-        ),
-        model.batch(),
-    ):
-        model.add_component_from_definition(RESISTOR_DEFINITION.id, QPointF(0.0, 0.0))
-
-    assert any("modelChanged" in r.getMessage() for r in caplog.records)
