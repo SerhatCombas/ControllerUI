@@ -169,6 +169,10 @@ class WorkspaceCommandStack:
         # S1.7.5 cleanChanged binding (closes the TODO(S1.7) markers
         # in `WorkspaceModel._set_dirty` / `_clear_dirty`).
         self._stack.cleanChanged.connect(self._on_clean_changed)
+        # S2.E.1 — clear the undo history at the end of a successful
+        # `WorkspaceModel.from_dict` load per spec/02 §29.3.1
+        # ("must clear undo stack and reset dirty state to false").
+        self._model.loaded.connect(self._stack.clear)
 
     def _on_clean_changed(self, clean: bool) -> None:
         """Sync the model's dirty bit with the stack's clean state.

@@ -29,7 +29,7 @@ References:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 # Mechanical boundary condition closed set per `02 §11.2`.
 BoundaryKind = Literal["free", "fixed", "constrained"]
@@ -68,6 +68,33 @@ class PhysicalAttributes:
     directional: bool = False
     source: bool = False
     source_type: SourceKind | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a 5-key dict for project-file persistence (S2.E)."""
+        return {
+            "boundary": self.boundary,
+            "motion": self.motion,
+            "directional": self.directional,
+            "source": self.source,
+            "source_type": self.source_type,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> PhysicalAttributes:
+        """Inverse of `to_dict`. Missing fields fall back to defaults.
+
+        Enum-typed fields (`boundary`, `motion`, `source_type`) are
+        preserved verbatim — unknown future values pass through for
+        forward compatibility (spec §29.4) and the validator surfaces
+        them in a later stage.
+        """
+        return cls(
+            boundary=payload.get("boundary"),
+            motion=payload.get("motion"),
+            directional=bool(payload.get("directional", False)),
+            source=bool(payload.get("source", False)),
+            source_type=payload.get("source_type"),
+        )
 
 
 __all__ = [

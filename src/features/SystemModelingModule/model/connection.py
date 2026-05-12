@@ -62,6 +62,46 @@ class ConnectionRouting:
     style: RoutingStyle = "orthogonal"
     waypoints: tuple[Waypoint, ...] = ()
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a 2-key dict (S2.E).
+
+        Waypoints become JSON-friendly nested lists `[[x, y], ...]`.
+        Unknown future style values pass through verbatim.
+        """
+        return {
+            "style": self.style,
+            "waypoints": [[w[0], w[1]] for w in self.waypoints],
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> ConnectionRouting:
+        """Inverse of `to_dict`. Missing fields fall back to defaults."""
+        style_raw = payload.get("style", "orthogonal")
+        waypoints_raw = payload.get("waypoints", []) or []
+        waypoints: tuple[Waypoint, ...] = tuple(
+            (float(w[0]), float(w[1]))
+            for w in waypoints_raw
+            if isinstance(w, list | tuple) and len(w) == 2
+        )
+        return cls(style=style_raw, waypoints=waypoints)
+
+
+# Known top-level fields recognized by `Connection.from_dict`; anything
+# else is routed into `extensions` per spec/02 §29.4.
+_CONNECTION_KNOWN_FIELDS: frozenset[str] = frozenset(
+    {
+        "id",
+        "display_id",
+        "source",
+        "target",
+        "routing",
+        "label",
+        "style",
+        "metadata",
+        "extensions",
+    }
+)
+
 
 @dataclass(frozen=True)
 class Connection:
@@ -111,6 +151,58 @@ class Connection:
     style: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     extensions: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a project-file dict (S2.E).
+
+        Nested value types (`source`, `target`, `routing`) recurse via
+        their own `to_dict`. Mutable container fields (`style`,
+        `metadata`, `extensions`) are deep-copied so callers cannot
+        mutate the value type through the returned payload.
+        """
+        return {
+            "id": self.id,
+            "display_id": self.display_id,
+            "source": self.source.to_dict(),
+            "target": self.target.to_dict(),
+            "routing": self.routing.to_dict(),
+            "label": self.label,
+            "style": dict(self.style),
+            "metadata": dict(self.metadata),
+            "extensions": dict(self.extensions),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> Connection:
+        """Inverse of `to_dict`. Required identity fields raise on absence."""
+        for required in ("id", "display_id", "source", "target"):
+            if required not in payload:
+                raise KeyError(f"Connection payload missing '{required}'")
+        source_payload = payload["source"]
+        target_payload = payload["target"]
+        if not isinstance(source_payload, dict):
+            raise ValueError("Connection.source must be a JSON object")
+        if not isinstance(target_payload, dict):
+            raise ValueError("Connection.target must be a JSON object")
+        routing_payload = payload.get("routing", {}) or {}
+        if not isinstance(routing_payload, dict):
+            routing_payload = {}
+        carry = {k: v for k, v in payload.items() if k not in _CONNECTION_KNOWN_FIELDS}
+        extensions_in: dict[str, Any] = (
+            dict(payload["extensions"]) if isinstance(payload.get("extensions"), dict) else {}
+        )
+        extensions_in.update(carry)
+        return cls(
+            id=str(payload["id"]),
+            display_id=str(payload["display_id"]),
+            source=PortRef.from_dict(source_payload),
+            target=PortRef.from_dict(target_payload),
+            routing=ConnectionRouting.from_dict(routing_payload),
+            label=str(payload.get("label", "")),
+            style=dict(payload.get("style", {}) or {}),
+            metadata=dict(payload.get("metadata", {}) or {}),
+            extensions=extensions_in,
+        )
 
 
 __all__ = [

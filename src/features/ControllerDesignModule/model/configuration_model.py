@@ -37,6 +37,8 @@ References:
 
 from __future__ import annotations
 
+from typing import Any
+
 from PySide6.QtCore import QObject, Signal
 
 from .controller_settings import ControllerSettings
@@ -81,6 +83,11 @@ class ConfigurationModel(QObject):
     # so the shell's title-bar dirty indicator can OR both signals
     # into a single project-level "dirty" view (spec/03 §9).
     dirtyChanged = Signal(bool)
+    # S2.E.1 — emitted at the end of a successful `from_dict` load.
+    # `ConfigurationCommandStack` subscribes to clear its QUndoStack
+    # per spec/02 §29.3.1 (extended to configuration data by analogy
+    # with the workspace side). Parallel to `WorkspaceModel.loaded`.
+    loaded = Signal()
 
     def __init__(
         self,
@@ -226,6 +233,85 @@ class ConfigurationModel(QObject):
             return
         self._dirty = False
         self.dirtyChanged.emit(False)
+
+    # ------------------------------------------------------------------ #
+    # Project-file serialization (S2.E.1)
+    # ------------------------------------------------------------------ #
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the configuration section of a project file (spec/03 §11.1).
+
+        Aggregates the four S2.A dataclass families into the JSON
+        layout spec/02 §29.1 lists at project-file top level. The
+        project-level `schema_version` / `application_version`
+        wrapper is added by `application/persistence/project_io.py`
+        (S2.E.2).
+        """
+        return {
+            "controller_settings": self._controller_settings.to_dict(),
+            "io_selection": self._io_selection.to_dict(),
+            "simulation_settings": self._simulation_settings.to_dict(),
+            "plot_layout": self._plot_layout.to_dict(),
+        }
+
+    def from_dict(self, data: dict[str, Any]) -> None:
+        """Replace the configuration state from a serialized payload.
+
+        Spec/02 §29.3.1 atomicity rule honored explicitly: every
+        section is parsed and validated **before** any setter is
+        invoked. On any parse failure the model is untouched.
+        On success the four setters run in order; each fires its
+        own change signal once (transition-only per ADR-020).
+        Dirty is cleared and `loaded` is emitted so the command
+        stack can clear its QUndoStack.
+
+        Missing sections fall back to defaults per spec/03 §11.4:
+        an absent `controller_settings` becomes an empty
+        `ControllerSettings()`, etc. Unknown sections are
+        ignored (forward-compat path is the project-level
+        `extensions` field handled by `project_io.py`).
+        """
+        # Phase 1: parse + validate every section first. No
+        # mutation, no setter calls. Any KeyError / ValueError
+        # propagates here, leaving the model untouched.
+        cs_payload = data.get("controller_settings", {}) or {}
+        ios_payload = data.get("io_selection", {}) or {}
+        sim_payload = data.get("simulation_settings", {}) or {}
+        plot_payload = data.get("plot_layout", {}) or {}
+        new_controller = (
+            ControllerSettings.from_dict(cs_payload)
+            if isinstance(cs_payload, dict) and cs_payload
+            else ControllerSettings()
+        )
+        new_io = (
+            IOSelection.from_dict(ios_payload)
+            if isinstance(ios_payload, dict) and ios_payload
+            else IOSelection()
+        )
+        new_simulation = (
+            SimulationSettings.from_dict(sim_payload)
+            if isinstance(sim_payload, dict) and sim_payload
+            else SimulationSettings()
+        )
+        new_plot = (
+            PlotLayout.from_dict(plot_payload)
+            if isinstance(plot_payload, dict) and plot_payload
+            else PlotLayout()
+        )
+
+        # Phase 2: apply atomically. Each setter fires its own
+        # transition-only change signal once. The application order
+        # is deterministic but signal-independent — subscribers can
+        # ignore intermediate states and react to `loaded` at the
+        # end for a single load-completion event.
+        self.set_controller_settings(new_controller)
+        self.set_io_selection(new_io)
+        self.set_simulation_settings(new_simulation)
+        self.set_plot_layout(new_plot)
+        # Spec §29.3.1: dirty becomes False after successful load.
+        self._clear_dirty()
+        # Notify the command stack so it can clear its QUndoStack.
+        self.loaded.emit()
 
 
 __all__ = ["ConfigurationModel"]

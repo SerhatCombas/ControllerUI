@@ -25,6 +25,7 @@ References:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +54,21 @@ class PortRef:
 
     component_id: str
     port_id: str
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a 2-key dict for project-file persistence (S2.E)."""
+        return {"component_id": self.component_id, "port_id": self.port_id}
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> PortRef:
+        """Inverse of `to_dict`. Both fields required."""
+        cid = payload.get("component_id")
+        pid = payload.get("port_id")
+        if not isinstance(cid, str) or not cid:
+            raise KeyError("PortRef payload missing required 'component_id'")
+        if not isinstance(pid, str) or not pid:
+            raise KeyError("PortRef payload missing required 'port_id'")
+        return cls(component_id=cid, port_id=pid)
 
 
 __all__ = ["PortRef"]

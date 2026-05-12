@@ -111,6 +111,12 @@ class ConfigurationCommandStack:
         self._model = model
         self._stack = QUndoStack(parent) if parent is not None else QUndoStack()
         self._stack.cleanChanged.connect(self._on_clean_changed)
+        # S2.E.1 — clear the undo history at the end of a successful
+        # `ConfigurationModel.from_dict` load per spec/02 §29.3.1
+        # (extended to configuration data by analogy with the
+        # workspace side). The bind happens at construction so the
+        # shell does not have to wire it explicitly.
+        self._model.loaded.connect(self._stack.clear)
 
     def _on_clean_changed(self, clean: bool) -> None:
         """Sync the model's dirty bit with the stack's clean state.

@@ -393,6 +393,16 @@ class WorkspaceModel(QObject):
     modelReset = Signal()
     dirtyChanged = Signal(bool)
 
+    # S2.E.1 — emitted at the end of a successful `from_dict` load,
+    # after the model state has been rebuilt and the dirty bit
+    # cleared. The `WorkspaceCommandStack` subscribes to clear its
+    # QUndoStack per spec/02 §29.3.1 ("must clear undo stack and
+    # reset dirty state to `false` after successful load") without
+    # needing a feature-internal back-reference: the command stack
+    # binds to this signal at construction time and reacts purely
+    # via the public signal surface.
+    loaded = Signal()
+
     # ------------------------------------------------------------------ #
     # Coarse-grained batch signal (ADR-019)
     # ------------------------------------------------------------------ #
@@ -430,6 +440,13 @@ class WorkspaceModel(QObject):
         # accumulating diff content for the outermost batch only.
         self._batch_depth: int = 0
         self._batch_builder: _ChangeSetBuilder | None = None
+        # Workspace-level metadata / extensions buckets (S2.E.1).
+        # Populated by `from_dict` from the workspace section of a
+        # project file; emitted back through `to_dict` for round-trip
+        # preservation per spec/02 §29.4. Unused by Phase-1 mutation
+        # APIs (component/connection edits do not touch these).
+        self._workspace_metadata: dict[str, Any] = {}
+        self._workspace_extensions: dict[str, Any] = {}
 
     # ------------------------------------------------------------------ #
     # Read-only views
@@ -591,6 +608,11 @@ class WorkspaceModel(QObject):
         self._components.clear()
         self._connections.clear()
         self._id_generator = WorkspaceIdGenerator()
+        # Workspace-level metadata / extensions also reset; blank-
+        # slate semantics extend to these buckets per the S2.E.1
+        # round-trip contract.
+        self._workspace_metadata = {}
+        self._workspace_extensions = {}
 
         if self._batch_builder is not None:
             # Inside a batch: nuke queued state first, then clear
@@ -605,6 +627,99 @@ class WorkspaceModel(QObject):
         # then emit modelReset.
         self._clear_dirty()
         self.modelReset.emit()
+
+    # ------------------------------------------------------------------ #
+    # Project-file serialization (S2.E.1)
+    # ------------------------------------------------------------------ #
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the workspace section of a project file (spec/02 §29.3.1).
+
+        Returns the `components` + `connections` payload only; the
+        project-level `schema_version` / `application_version`
+        wrapper is added by `application/persistence/project_io.py`
+        (S2.E.2). Workspace-level `metadata` / `extensions` flow
+        through verbatim so unknown future fields preserve across
+        round-trip per spec/02 §29.4.
+        """
+        return {
+            "components": [c.to_dict() for c in self._components.values()],
+            "connections": [c.to_dict() for c in self._connections.values()],
+            "metadata": dict(self._workspace_metadata),
+            "extensions": dict(self._workspace_extensions),
+        }
+
+    def from_dict(self, data: dict[str, Any]) -> None:
+        """Replace the model state with the contents of a serialized payload.
+
+        Spec/02 §29.3.1 contract:
+        * Reads `data` and runs the migration chain if it carries an
+          older `schema_version` (this method accepts data already
+          at the current schema; migration is the caller's job —
+          `application/persistence/project_io.py` runs the chain
+          before calling here).
+        * Atomicity: every entity is parsed and validated **before**
+          any model mutation. On any parse failure the model is
+          left untouched.
+        * Resets the model state, repopulates from the parsed
+          entities, rebuilds the ID counters, clears the dirty bit,
+          and emits `loaded` so the command stack can clear its
+          QUndoStack.
+
+        The fine-grained `componentAdded` / `connectionAdded`
+        signals are NOT emitted per-entity during load — the
+        load-flow's signal is `modelReset` (emitted by `reset()`
+        at the start of repopulation) plus `loaded` at the end.
+        Subscribers that maintain a per-entity index should react
+        to `modelReset` by re-reading the model state via
+        `components` / `connections` accessors.
+        """
+        # Phase 1: parse every entity into typed values WITHOUT
+        # touching the model. Any KeyError / ValueError propagates
+        # before mutation begins.
+        components_payload = data.get("components", []) or []
+        connections_payload = data.get("connections", []) or []
+        if not isinstance(components_payload, list):
+            components_payload = []
+        if not isinstance(connections_payload, list):
+            connections_payload = []
+        parsed_components: list[ComponentInstance] = [
+            ComponentInstance.from_dict(entry)
+            for entry in components_payload
+            if isinstance(entry, dict)
+        ]
+        parsed_connections: list[Connection] = [
+            Connection.from_dict(entry) for entry in connections_payload if isinstance(entry, dict)
+        ]
+
+        # Phase 2: apply atomically. `reset()` clears + emits
+        # modelReset; `_clear_dirty()` (called by reset) emits
+        # dirtyChanged(False) on transition.
+        self.reset()
+        for component in parsed_components:
+            self._components[component.id] = component
+        for connection in parsed_connections:
+            self._connections[connection.id] = connection
+        # Spec/02 §8.3 + §8.8: rebuild display-counter state from
+        # the just-loaded entities so subsequent `add_component`
+        # / `add_connection` calls produce non-colliding display ids.
+        self._id_generator.rebuild_counters_from(
+            self._components.values(),
+            self._connections.values(),
+        )
+        # Preserve workspace-level metadata / extensions for
+        # round-trip per spec/02 §29.4.
+        self._workspace_metadata = dict(data.get("metadata", {}) or {})
+        self._workspace_extensions = dict(data.get("extensions", {}) or {})
+
+        # Per spec §29.3.1: dirty becomes False after successful
+        # load. `reset()` already cleared dirty; the second call
+        # is a no-op under the transition-only rule.
+        self._clear_dirty()
+        # Notify the command stack so it can clear its QUndoStack.
+        # No batch-builder coordination needed: load is always
+        # outside a batch (the model just got reset).
+        self.loaded.emit()
 
     # ------------------------------------------------------------------ #
     # Public mutation API — components
