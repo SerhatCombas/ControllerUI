@@ -37,16 +37,12 @@ References:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from PySide6.QtCore import QObject, Signal
 
 from .controller_settings import ControllerSettings
 from .io_selection import IOSelection
 from .plot_layout import PlotLayout
-
-if TYPE_CHECKING:
-    from .simulation_settings import SimulationSettings
+from .simulation_settings import SimulationSettings
 
 
 class ConfigurationModel(QObject):
@@ -72,12 +68,15 @@ class ConfigurationModel(QObject):
             cheap").
     """
 
-    # S2.B.3 / S2.C / S2.D.1 signals. The last remaining spec/03 §9
-    # signal (`simulationSettingsChanged`) lands in S2.D.3 alongside
-    # its setter.
+    # spec/03 §9 signal set is complete after S2.D.3:
+    #   ioSelectionChanged      (S2.B.3)
+    #   plotLayoutChanged       (S2.C)
+    #   controllerSettingsChanged   (S2.D.1)
+    #   simulationSettingsChanged   (S2.D.3 — this commit)
     ioSelectionChanged = Signal(IOSelection)
     plotLayoutChanged = Signal(PlotLayout)
     controllerSettingsChanged = Signal(ControllerSettings)
+    simulationSettingsChanged = Signal(SimulationSettings)
     # S2.D.1 — module-level dirty bit. Mirrors `WorkspaceModel.dirtyChanged`
     # so the shell's title-bar dirty indicator can OR both signals
     # into a single project-level "dirty" view (spec/03 §9).
@@ -183,6 +182,21 @@ class ConfigurationModel(QObject):
             return
         self._controller_settings = new
         self.controllerSettingsChanged.emit(new)
+
+    def set_simulation_settings(self, new: SimulationSettings) -> None:
+        """Install a new `SimulationSettings` and emit `simulationSettingsChanged`.
+
+        Full-replacement setter, identical contract to the other
+        three section setters. Per-field mutations are produced
+        caller-side via `SimulationSettings.with_updated(field=value)`;
+        the S2.D.3 `ChangeSimulationSettingCommand` is the single
+        command class that wraps any such delta. Transition-only
+        emission per ADR-020.
+        """
+        if new == self._simulation_settings:
+            return
+        self._simulation_settings = new
+        self.simulationSettingsChanged.emit(new)
 
     # ------------------------------------------------------------------ #
     # Internal dirty helpers (called by ConfigurationCommandStack)

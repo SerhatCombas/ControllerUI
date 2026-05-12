@@ -23,6 +23,9 @@ from .add_controller_command import AddControllerCommand
 from .add_io_input_command import AddIOInputCommand
 from .add_io_output_command import AddIOOutputCommand
 from .change_controller_type_command import ChangeControllerTypeCommand
+from .change_plot_title_command import ChangePlotTitleCommand
+from .change_plot_type_command import ChangePlotTypeCommand
+from .change_simulation_setting_command import ChangeSimulationSettingCommand
 from .configuration_command_stack import (
     ConfigurationCommand,
     ConfigurationCommandStack,
@@ -34,12 +37,16 @@ from .remove_io_input_command import RemoveIOInputCommand
 from .remove_io_output_command import RemoveIOOutputCommand
 from .set_controller_io_linkage_command import SetControllerIOLinkageCommand
 from .toggle_controller_enabled_command import ToggleControllerEnabledCommand
+from .toggle_fullscreen_command import ToggleFullscreenCommand
 
 __all__ = [
     "AddControllerCommand",
     "AddIOInputCommand",
     "AddIOOutputCommand",
     "ChangeControllerTypeCommand",
+    "ChangePlotTitleCommand",
+    "ChangePlotTypeCommand",
+    "ChangeSimulationSettingCommand",
     "ConfigurationCommand",
     "ConfigurationCommandStack",
     "EditControllerParameterCommand",
@@ -49,4 +56,5 @@ __all__ = [
     "RemoveIOOutputCommand",
     "SetControllerIOLinkageCommand",
     "ToggleControllerEnabledCommand",
+    "ToggleFullscreenCommand",
 ]

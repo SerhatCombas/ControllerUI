@@ -164,23 +164,21 @@ def test_set_io_selection_payload_carries_full_new_value(
 
 
 @pytest.mark.unit
-def test_setter_api_state_after_s2_d_1(
+def test_setter_api_complete_after_s2_d_3(
     configuration: ConfigurationModel,
 ) -> None:
-    """Setter API status as of S2.D.1.
+    """All four spec/03 §9 setters are present after S2.D.3.
 
-    Present:
+    The setter API landed incrementally:
       * `set_io_selection` — S2.B.3
       * `set_plot_layout` — S2.C
-      * `set_controller_settings` — S2.D.1 (this commit)
-
-    Still deferred (lands S2.D.3 with simulation commands):
-      * `set_simulation_settings`
+      * `set_controller_settings` — S2.D.1
+      * `set_simulation_settings` — S2.D.3 (final piece)
     """
     assert hasattr(configuration, "set_io_selection")
     assert hasattr(configuration, "set_plot_layout")
     assert hasattr(configuration, "set_controller_settings")
-    assert not hasattr(configuration, "set_simulation_settings")
+    assert hasattr(configuration, "set_simulation_settings")
 
 
 # ====================================================================== #
