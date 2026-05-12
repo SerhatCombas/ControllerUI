@@ -38,6 +38,7 @@ References:
 * `specs/05_simulation_and_results_requirements.md` §16
 """
 
+from .configuration_model import ConfigurationModel
 from .configuration_validator import ConfigurationValidator
 from .controller_settings import ControllerSettings, ControllerSpec
 from .defaults import (
@@ -79,6 +80,7 @@ __all__: list[str] = [
     "IO_INPUT_ID_PREFIX",
     "IO_OUTPUT_ID_PREFIX",
     "BondGraphVariable",
+    "ConfigurationModel",
     "ConfigurationValidator",
     "ControllerSettings",
     "ControllerSpec",
