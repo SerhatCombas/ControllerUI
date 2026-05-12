@@ -359,6 +359,13 @@ The following codes are defined for Phase 1.
 
 ### 7.7 Validation Errors
 
+The `validation` category covers both workspace-graph validation
+(emitted by `SystemModelingModule.GraphValidator`) and configuration-
+side validation (emitted by `ControllerDesignModule.ConfigurationValidator`).
+Codes are namespaced by concept, not by emitting module — the
+`simulation_*`, `stale_*`, and `unsupported_*` qualifiers identify
+the rule that produced each issue.
+
 | Code | Severity | Description |
 |---|---|---|
 | `error.validation.missing_ground` | error | Electrical model has no Ground reference |
@@ -367,6 +374,15 @@ The following codes are defined for Phase 1.
 | `warning.validation.unused_port` | warning | A required port is unused |
 | `warning.validation.unresolved_port` | warning | A port reference cannot be resolved |
 | `info.validation.workspace_empty` | info | The workspace is empty |
+| `error.validation.simulation_stop_time_le_start_time` | error | Simulation `stop_time` is not strictly greater than `start_time` |
+| `error.validation.simulation_sample_time_non_positive` | error | Simulation `sample_time` is zero or negative |
+| `error.validation.simulation_max_step_non_positive` | error | Simulation `max_step` is set to a non-positive value (`None` disables the cap) |
+| `warning.validation.unsupported_controller_type` | warning | `controller_type` is outside the Phase-1 set (`P`, `PI`, `PD`, `PID`); value preserved on save |
+| `warning.validation.unsupported_solver` | warning | `solver` is outside the Phase-1 set (`auto`, `fixed_step`, `variable_step`); value preserved on save |
+| `warning.validation.stale_controller_input_ref` | warning | Enabled controller's `input_ref` does not resolve to any entry in `io_selection.inputs` |
+| `warning.validation.stale_controller_output_ref` | warning | Enabled controller's `output_ref` does not resolve to any entry in `io_selection.outputs` |
+| `warning.validation.stale_io_component_ref` | warning | I/O entry source references a component id that is not present in the workspace |
+| `warning.validation.stale_io_port_ref` | warning | I/O entry source references a port id that is not declared on the target component's definition |
 
 ### 7.8 Persistence Errors
 
