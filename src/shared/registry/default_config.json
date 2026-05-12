@@ -1,0 +1,44 @@
+{
+  "schema_version": "0.2.0",
+  "controller_settings": {
+    "controllers": [
+      {
+        "controller_type": "PID",
+        "display_name": "Main PID",
+        "enabled": false,
+        "parameters": {
+          "kp": 1.0,
+          "ki": 0.0,
+          "kd": 0.0
+        },
+        "input_ref": null,
+        "output_ref": null,
+        "metadata": {},
+        "extensions": {}
+      }
+    ],
+    "metadata": {},
+    "extensions": {}
+  },
+  "io_selection": {
+    "inputs": [],
+    "outputs": [],
+    "metadata": {},
+    "extensions": {}
+  },
+  "simulation_settings": {
+    "start_time": 0.0,
+    "stop_time": 10.0,
+    "sample_time": 0.01,
+    "max_step": null,
+    "solver": "auto",
+    "use_controller": false,
+    "use_last_valid_model": true,
+    "initial_conditions": {
+      "source": "component_parameters",
+      "overrides": []
+    },
+    "metadata": {},
+    "extensions": {}
+  }
+}

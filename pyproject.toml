@@ -53,6 +53,12 @@ where = ["src"]
 include = ["application*", "features*", "shared*"]
 exclude = ["tests*"]
 
+# --- Setuptools package data --------------------------------------------------
+# Ship non-Python data files inside the installed package so
+# `importlib.resources.files(...)` resolves them in non-editable installs.
+[tool.setuptools.package-data]
+"shared.registry" = ["*.json"]
+
 # --- Ruff ---------------------------------------------------------------------
 [tool.ruff]
 line-length = 100
