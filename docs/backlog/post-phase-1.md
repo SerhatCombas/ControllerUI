@@ -129,6 +129,59 @@ touches, no behavior change, all existing tests stay green.
 
 ---
 
+## QUndoGroup active-stack run-out (deferred from S2.G.1)
+
+**Source:** S2.G.1 commit (`cea353f`). The shell composes both
+feature stacks under a `QUndoGroup`; the "most recently mutated"
+stack is set active via `indexChanged` listeners. Edge case
+documented in the commit message and the
+`test_undo_action_disables_when_active_stack_empty` integration
+test: when the active stack runs out of undo (e.g., user undid
+their last workspace push), `Edit → Undo` disables even if the
+other stack still has history.
+
+**Rationale for deferral:** Focus-based active-stack switching
+needs widget-focus event plumbing that Phase 1 doesn't have.
+Workaround: the user pushes a new action on the other stack to
+reactivate. Acceptable Phase-1 UX; cleanup is a polish item.
+
+**Items:**
+
+* Install `installEventFilter` or focus event hooks on each
+  feature widget set so workspace-area focus activates the
+  workspace stack and configuration-area focus activates the
+  configuration stack.
+* Re-add a "stack-with-undo-history" fallback in
+  `_on_workspace_index_changed` / `_on_config_index_changed` so
+  active stack falls back to the other when emptied.
+
+**Scope estimate:** ~15 LOC source + ~3 gui tests.
+
+---
+
+## Title format helper extraction (deferred from S2.G.1)
+
+**Source:** S2.G.1 commit (`cea353f`). The title format
+(`'<project>[ *] — System Designer'`) is hardcoded inside
+`_update_window_title`. Future localization or a
+"compact title" preference would need to extract this into a
+formatter helper.
+
+**Rationale for deferral:** Phase 1 ships with English-only
+UI; the hardcoded format is fine. Localization lands in
+Phase 2+.
+
+**Items:**
+
+* Extract title format into a `_format_window_title(project_name,
+  is_dirty)` free function (or `shared/types/title_format.py`).
+* When localization arrives, plug a `Translator` into the
+  helper without touching the slot wiring.
+
+**Scope estimate:** ~10 LOC refactor + 1 unit test.
+
+---
+
 ## ADR-016 root_locus row alignment (deferred from S2.C)
 
 **Source:** S2.C scaffold (commit `21cf9c0` "S2.C: PlotLayout +

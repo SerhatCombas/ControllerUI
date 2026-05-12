@@ -76,6 +76,18 @@ PROJECT_RECOVERY_LOADED = "project.recovery_loaded"
 PROJECT_MIGRATION_APPLIED = "project.migration_applied"
 PROJECT_MIGRATION_FAILED = "project.migration_failed"
 
+# S2.E.2 + S2.G.2 — explicit lifecycle events for the
+# `application/persistence/project_io.py` save / load orchestrator
+# and the shell's File menu slots. Distinct from the older
+# `project.saved` / `project.opened` constants (kept for autosave
+# in S2.F where they describe a different lifecycle pattern).
+PROJECT_SAVE_STARTED = "project.save_started"
+PROJECT_SAVE_COMPLETED = "project.save_completed"
+PROJECT_SAVE_FAILED = "project.save_failed"
+PROJECT_LOAD_STARTED = "project.load_started"
+PROJECT_LOAD_COMPLETED = "project.load_completed"
+PROJECT_LOAD_FAILED = "project.load_failed"
+
 # ---------------------------------------------------------------------- #
 # §8.3 Registry events
 # ---------------------------------------------------------------------- #
@@ -138,11 +150,17 @@ __all__ = [
     # §8.2 Project
     "PROJECT_AUTOSAVE",
     "PROJECT_CLOSED",
+    "PROJECT_LOAD_COMPLETED",
+    "PROJECT_LOAD_FAILED",
+    "PROJECT_LOAD_STARTED",
     "PROJECT_MIGRATION_APPLIED",
     "PROJECT_MIGRATION_FAILED",
     "PROJECT_NEW",
     "PROJECT_OPENED",
     "PROJECT_RECOVERY_LOADED",
+    "PROJECT_SAVE_COMPLETED",
+    "PROJECT_SAVE_FAILED",
+    "PROJECT_SAVE_STARTED",
     "PROJECT_SAVED",
     # §8.3 Registry
     "REGISTRY_BOOTSTRAP_COMPLETED",

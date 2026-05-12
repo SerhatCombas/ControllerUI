@@ -53,6 +53,14 @@ _EXPECTED_PROJECT_EVENTS: dict[str, str] = {
     "PROJECT_RECOVERY_LOADED": "project.recovery_loaded",
     "PROJECT_MIGRATION_APPLIED": "project.migration_applied",
     "PROJECT_MIGRATION_FAILED": "project.migration_failed",
+    # S2.E.2 + S2.G.2 — explicit save/load lifecycle events for
+    # the persistence orchestrator and the shell File menu.
+    "PROJECT_SAVE_STARTED": "project.save_started",
+    "PROJECT_SAVE_COMPLETED": "project.save_completed",
+    "PROJECT_SAVE_FAILED": "project.save_failed",
+    "PROJECT_LOAD_STARTED": "project.load_started",
+    "PROJECT_LOAD_COMPLETED": "project.load_completed",
+    "PROJECT_LOAD_FAILED": "project.load_failed",
 }
 
 _EXPECTED_REGISTRY_EVENTS: dict[str, str] = {

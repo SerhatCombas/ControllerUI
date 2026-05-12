@@ -60,11 +60,18 @@ References:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from PySide6.QtCore import QStandardPaths
 from PySide6.QtGui import QKeySequence, QUndoGroup
-from PySide6.QtWidgets import QDockWidget, QMainWindow
+from PySide6.QtWidgets import QDockWidget, QFileDialog, QMainWindow, QMessageBox
 
+from application.persistence import (
+    ProjectFormatError,
+    load_project,
+    save_project,
+)
 from features.ControllerDesignModule.commands import ConfigurationCommandStack
 from features.ControllerDesignModule.model import (
     ConfigurationModel,
@@ -72,6 +79,7 @@ from features.ControllerDesignModule.model import (
     IOSelection,
     PlotLayout,
     SimulationSettings,
+    load_default_configuration,
 )
 from features.SystemModelingModule.commands import WorkspaceCommandStack
 from features.SystemModelingModule.model.workspace_model import WorkspaceModel
@@ -94,8 +102,6 @@ from shared.registry import ComponentRegistry
 from shared.registry.builtin import BUILTIN_COMPONENT_DEFINITIONS
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from PySide6.QtWidgets import QWidget
 
     from features.SystemModelingModule.model.validation_report import (
@@ -218,6 +224,9 @@ class SystemDesignerShell(QMainWindow):
 
         # 10. Edit menu (Undo / Redo via QUndoGroup — S2.G.1).
         self._build_edit_menu()
+
+        # 10b. File menu (New / Open / Save / Save As — S2.G.2).
+        self._build_file_menu()
 
         # 11. Status bar wiring.
         self.statusBar().showMessage("Ready", _STATUS_TRANSIENT_MS)
@@ -362,6 +371,42 @@ class SystemDesignerShell(QMainWindow):
         # invokes it before any push (where it will be a no-op
         # because the workspace stack is empty).
         self._undo_group.setActiveStack(workspace_qstack)
+
+    def _build_file_menu(self) -> None:
+        """Construct the File menu (New / Open / Save / Save As — S2.G.2).
+
+        Action shortcuts use the Qt standard-key family so they
+        adapt to the platform conventions (Cmd+N on macOS,
+        Ctrl+N on Windows / Linux, etc.). Save's shortcut belongs
+        to `Save`, not `Save As`; `Save As` ships with no shortcut
+        per Phase-1 minimalism (Cmd+Shift+S on macOS lands in
+        S1.11 polish if requested).
+        """
+        menu_bar = self.menuBar()
+        file_menu = menu_bar.addMenu("&File")
+
+        new_action = file_menu.addAction("&New Project")
+        new_action.setShortcut(QKeySequence.StandardKey.New)
+        new_action.triggered.connect(self._on_new_project)
+
+        open_action = file_menu.addAction("&Open Project...")
+        open_action.setShortcut(QKeySequence.StandardKey.Open)
+        open_action.triggered.connect(self._on_open_project)
+
+        file_menu.addSeparator()
+
+        save_action = file_menu.addAction("&Save")
+        save_action.setShortcut(QKeySequence.StandardKey.Save)
+        save_action.triggered.connect(self._on_save_project)
+
+        save_as_action = file_menu.addAction("Save &As...")
+        save_as_action.setShortcut(QKeySequence.StandardKey.SaveAs)
+        save_as_action.triggered.connect(self._on_save_project_as)
+
+        self._new_action = new_action
+        self._open_action = open_action
+        self._save_action = save_action
+        self._save_as_action = save_as_action
 
     def _wire_status_bar_signals(self) -> None:
         """Subscribe the status bar to model events for live feedback.
@@ -514,6 +559,226 @@ class SystemDesignerShell(QMainWindow):
             project_name = self._current_bundle_path.stem
         dirty_marker = " *" if is_dirty else ""
         self.setWindowTitle(f"{project_name}{dirty_marker} — System Designer")
+
+    # ------------------------------------------------------------------ #
+    # File menu slots (S2.G.2)
+    # ------------------------------------------------------------------ #
+
+    def _on_new_project(self) -> None:
+        """File → New: reset both models to Phase-1 defaults.
+
+        Honors the unsaved-changes flow per SI2: if either model
+        is dirty, prompt with Discard / Save / Cancel before
+        applying defaults. The reset itself loads
+        `default_config.json` via `load_default_configuration()`
+        so the user sees the Phase-1 starting state, not an
+        empty configuration.
+        """
+        if not self._confirm_discard_or_save_if_dirty():
+            return
+        self._reset_to_defaults()
+        self._current_bundle_path = None
+        self._update_window_title()
+        self.statusBar().showMessage("New project", _STATUS_TRANSIENT_MS)
+
+    def _on_open_project(self) -> None:
+        """File → Open: pick a `.systemdesign/` directory and load it."""
+        if not self._confirm_discard_or_save_if_dirty():
+            return
+        path_str, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Project",
+            self._default_dialog_directory(),
+            f"System Designer Bundle (*{_BUNDLE_SUFFIX})",
+        )
+        if not path_str:
+            return  # user cancelled
+        self.load_project_from(Path(path_str))
+
+    def _on_save_project(self) -> None:
+        """File → Save: write to `_current_bundle_path`, or fall through to Save As.
+
+        Returns silently after a successful save; failures are
+        surfaced via `QMessageBox.critical` and the dirty bit is
+        deliberately left set (the save did not happen, so the
+        user's mental "I edited; I haven't saved" is still
+        accurate).
+        """
+        if self._current_bundle_path is None:
+            self._on_save_project_as()
+            return
+        self.save_current_project()
+
+    def _on_save_project_as(self) -> None:
+        """File → Save As: choose a new bundle path and save into it."""
+        chosen = self._show_save_as_dialog()
+        if chosen is None:
+            return  # user cancelled
+        # Mutate `_current_bundle_path` BEFORE writing so a save
+        # failure leaves the path bound (the user can retry into
+        # the same target without re-picking).
+        self._current_bundle_path = chosen
+        self._update_window_title()
+        self.save_current_project()
+
+    # ------------------------------------------------------------------ #
+    # File menu helpers — public API (test + smoke harness convenience)
+    # ------------------------------------------------------------------ #
+
+    def save_current_project(self) -> bool:
+        """Save to `_current_bundle_path`. Returns True on success.
+
+        Wraps `save_project` in a try/except so menu slots and the
+        smoke harness share one error UX. On success the spec/02
+        §29.7 contract is honored: each command stack's current
+        index is marked clean via `setClean()`, which propagates
+        through `cleanChanged(True)` into each model's
+        `_clear_dirty()`. The undo history itself is preserved —
+        only the dirty bit transitions.
+        """
+        assert self._current_bundle_path is not None
+        try:
+            save_project(
+                self._current_bundle_path,
+                workspace_model=self._model,
+                configuration_model=self._configuration_model,
+            )
+        except (OSError, ProjectFormatError) as exc:
+            QMessageBox.critical(self, "Save failed", str(exc))
+            self.statusBar().showMessage("Save failed", _STATUS_PERSISTENT_MS)
+            return False
+        # Spec §29.7 + ADR-020 save-clean atomicity: mark each
+        # stack's current index as the new clean baseline. Qt
+        # emits `cleanChanged(True)` from `setClean()` when the
+        # stack was previously dirty; each model's binding then
+        # clears its `is_dirty` flag.
+        self._command_stack.stack.setClean()
+        self._configuration_command_stack.stack.setClean()
+        self.statusBar().showMessage(
+            f"Saved to {self._current_bundle_path.name}",
+            _STATUS_TRANSIENT_MS,
+        )
+        return True
+
+    def load_project_from(self, bundle_path: Path) -> bool:
+        """Load from `bundle_path`. Returns True on success.
+
+        Public method so a smoke harness or future shell-side
+        recovery flow can drive the load without going through the
+        file dialog. Errors surface as `QMessageBox.critical`.
+        """
+        try:
+            load_project(
+                bundle_path,
+                workspace_model=self._model,
+                configuration_model=self._configuration_model,
+            )
+        except (
+            ProjectFormatError,
+            FileNotFoundError,
+            KeyError,
+            ValueError,
+        ) as exc:
+            QMessageBox.critical(self, "Open failed", str(exc))
+            self.statusBar().showMessage("Open failed", _STATUS_PERSISTENT_MS)
+            return False
+        self._current_bundle_path = bundle_path
+        self._update_window_title()
+        self.statusBar().showMessage(
+            f"Opened {bundle_path.name}",
+            _STATUS_TRANSIENT_MS,
+        )
+        return True
+
+    # ------------------------------------------------------------------ #
+    # File menu helpers — private
+    # ------------------------------------------------------------------ #
+
+    def _confirm_discard_or_save_if_dirty(self) -> bool:
+        """Run the SI2 unsaved-changes dialog. Returns True if caller may proceed.
+
+        Behavior table:
+
+          - Neither model dirty → return True immediately.
+          - User picks Discard → return True (caller resets/loads).
+          - User picks Save → run save flow. Returns True iff save
+            succeeded; if Save As was cancelled or save failed,
+            returns False so the outer action aborts.
+          - User picks Cancel → return False.
+        """
+        if not (self._model.is_dirty or self._configuration_model.is_dirty):
+            return True
+        choice = QMessageBox.warning(
+            self,
+            "Unsaved changes",
+            "The current project has unsaved changes. "
+            "Discard them, save first, or cancel this action?",
+            QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if choice == QMessageBox.StandardButton.Discard:
+            return True
+        if choice == QMessageBox.StandardButton.Cancel:
+            return False
+        # Save chosen — route through the same logic as Ctrl+S.
+        if self._current_bundle_path is None:
+            chosen = self._show_save_as_dialog()
+            if chosen is None:
+                return False  # user cancelled Save As
+            self._current_bundle_path = chosen
+            self._update_window_title()
+        return self.save_current_project()
+
+    def _show_save_as_dialog(self) -> Path | None:
+        """Return the chosen bundle path, or `None` on cancel.
+
+        Uses `QFileDialog.getSaveFileName` with a
+        `.systemdesign` filter (SI3). Auto-appends the suffix if
+        the user omits it.
+        """
+        path_str, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Project As",
+            self._default_dialog_directory(),
+            f"System Designer Bundle (*{_BUNDLE_SUFFIX})",
+        )
+        if not path_str:
+            return None
+        path = Path(path_str)
+        if path.suffix != _BUNDLE_SUFFIX:
+            path = path.with_suffix(_BUNDLE_SUFFIX)
+        return path
+
+    def _default_dialog_directory(self) -> str:
+        """Return the cross-platform Documents folder for save / open dialogs.
+
+        `QStandardPaths.DocumentsLocation` resolves to
+        `~/Documents` on macOS / Linux and `%USERPROFILE%/Documents`
+        on Windows. Returns an empty string when the OS can't
+        provide one (rare; Qt falls back to the CWD in that case).
+        """
+        return QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+
+    def _reset_to_defaults(self) -> None:
+        """Replace both models' state with the Phase-1 defaults.
+
+        Used by File → New. The workspace gets an empty payload
+        (zero components, zero connections); the configuration
+        gets the Phase-1 default sections via
+        `load_default_configuration()`.
+        """
+        self._model.from_dict({"components": [], "connections": []})
+        cfg = load_default_configuration()
+        self._configuration_model.from_dict(
+            {
+                "controller_settings": cfg.controller_settings.to_dict(),
+                "io_selection": cfg.io_selection.to_dict(),
+                "simulation_settings": cfg.simulation_settings.to_dict(),
+                "plot_layout": cfg.plot_layout.to_dict(),
+            }
+        )
 
 
 __all__ = ["SystemDesignerShell"]

@@ -56,6 +56,7 @@ from features.SystemModelingModule.model.migrations import (
     CURRENT_SCHEMA_VERSION,
     WorkspaceModelMigrations,
 )
+from shared.utils import logging_events as events
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -122,7 +123,22 @@ def save_project(
         ProjectFormatError: `bundle_path` exists and is a regular
             file (not a directory).
     """
+    logger.info(
+        "Starting project save",
+        extra={
+            "event": events.PROJECT_SAVE_STARTED,
+            "bundle_path": str(bundle_path),
+        },
+    )
     if bundle_path.exists() and bundle_path.is_file():
+        logger.error(
+            "Project save target is a regular file",
+            extra={
+                "event": events.PROJECT_SAVE_FAILED,
+                "bundle_path": str(bundle_path),
+                "reason": "regular_file",
+            },
+        )
         raise ProjectFormatError(
             f"Cannot save: '{bundle_path}' is a regular file. "
             f"Project bundles must be directories per ADR-012."
@@ -134,11 +150,24 @@ def save_project(
         workspace_model=workspace_model,
         configuration_model=configuration_model,
     )
-    _atomic_write_json(bundle_path / _PROJECT_JSON_NAME, payload)
+    try:
+        _atomic_write_json(bundle_path / _PROJECT_JSON_NAME, payload)
+    except OSError as exc:
+        logger.error(
+            "Project save failed: %s",
+            exc,
+            extra={
+                "event": events.PROJECT_SAVE_FAILED,
+                "bundle_path": str(bundle_path),
+                "reason": type(exc).__name__,
+            },
+        )
+        raise
     logger.info(
         "Saved project to %s",
         bundle_path,
         extra={
+            "event": events.PROJECT_SAVE_COMPLETED,
             "bundle_path": str(bundle_path),
             "schema_version": payload["schema_version"],
         },
@@ -187,59 +216,78 @@ def load_project(
             level via S2.E.1 + at the cross-model level via the
             snapshot-rollback in this function.
     """
-    if bundle_path.is_file():
-        raise ProjectFormatError(
-            f"Expected a .systemdesign/ directory bundle; got file "
-            f"'{bundle_path}'. Legacy single-file format is not "
-            f"supported in Phase 1."
-        )
-    if not bundle_path.is_dir():
-        raise FileNotFoundError(f"Project bundle not found: {bundle_path}")
-
-    project_json_path = bundle_path / _PROJECT_JSON_NAME
-    if not project_json_path.is_file():
-        raise ProjectFormatError(
-            f"Bundle '{bundle_path}' is missing the required " f"'{_PROJECT_JSON_NAME}' file."
-        )
-
-    raw = project_json_path.read_text(encoding="utf-8")
+    logger.info(
+        "Starting project load",
+        extra={
+            "event": events.PROJECT_LOAD_STARTED,
+            "bundle_path": str(bundle_path),
+        },
+    )
     try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ProjectFormatError(f"Bundle '{bundle_path}' contains malformed JSON: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise ProjectFormatError(
-            f"Bundle '{bundle_path}' project.json top-level must be a "
-            f"JSON object; got {type(payload).__name__}."
-        )
+        if bundle_path.is_file():
+            raise ProjectFormatError(
+                f"Expected a .systemdesign/ directory bundle; got file "
+                f"'{bundle_path}'. Legacy single-file format is not "
+                f"supported in Phase 1."
+            )
+        if not bundle_path.is_dir():
+            raise FileNotFoundError(f"Project bundle not found: {bundle_path}")
 
-    # Run the migration chain (Phase-1 registry is empty, so this
-    # is a pass-through for current-version files and a clear
-    # error for newer/unknown versions).
-    migrated = WorkspaceModelMigrations.migrate(payload)
+        project_json_path = bundle_path / _PROJECT_JSON_NAME
+        if not project_json_path.is_file():
+            raise ProjectFormatError(
+                f"Bundle '{bundle_path}' is missing the required " f"'{_PROJECT_JSON_NAME}' file."
+            )
 
-    # Cross-model atomic load via snapshot-rollback. Capture the
-    # workspace's prior state BEFORE mutation so the rollback path
-    # has somewhere to return.
-    workspace_snapshot = workspace_model.to_dict()
-    workspace_model.from_dict(migrated)
-    try:
-        configuration_model.from_dict(migrated)
-    except Exception:
-        # Config load failed — restore workspace to its prior
-        # snapshot before propagating. The model's internal atomic
-        # from_dict makes this restoration safe (parse-then-apply).
-        logger.warning(
-            "Configuration load failed; rolling back workspace to prior state",
-            extra={"bundle_path": str(bundle_path)},
+        raw = project_json_path.read_text(encoding="utf-8")
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ProjectFormatError(
+                f"Bundle '{bundle_path}' contains malformed JSON: {exc}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ProjectFormatError(
+                f"Bundle '{bundle_path}' project.json top-level must be a "
+                f"JSON object; got {type(payload).__name__}."
+            )
+
+        # Run the migration chain (Phase-1 registry is empty, so this
+        # is a pass-through for current-version files and a clear
+        # error for newer/unknown versions).
+        migrated = WorkspaceModelMigrations.migrate(payload)
+
+        # Cross-model atomic load via snapshot-rollback. Capture
+        # the workspace's prior state BEFORE mutation so the
+        # rollback path has somewhere to return.
+        workspace_snapshot = workspace_model.to_dict()
+        workspace_model.from_dict(migrated)
+        try:
+            configuration_model.from_dict(migrated)
+        except Exception:
+            # Config load failed — restore workspace to its prior
+            # snapshot before propagating. The model's internal
+            # atomic from_dict makes this restoration safe
+            # (parse-then-apply).
+            workspace_model.from_dict(workspace_snapshot)
+            raise
+    except Exception as exc:
+        logger.error(
+            "Project load failed: %s",
+            exc,
+            extra={
+                "event": events.PROJECT_LOAD_FAILED,
+                "bundle_path": str(bundle_path),
+                "reason": type(exc).__name__,
+            },
         )
-        workspace_model.from_dict(workspace_snapshot)
         raise
 
     logger.info(
         "Loaded project from %s",
         bundle_path,
         extra={
+            "event": events.PROJECT_LOAD_COMPLETED,
             "bundle_path": str(bundle_path),
             "schema_version": migrated.get("schema_version"),
         },
