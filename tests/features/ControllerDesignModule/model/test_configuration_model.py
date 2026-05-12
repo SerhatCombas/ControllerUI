@@ -164,20 +164,23 @@ def test_set_io_selection_payload_carries_full_new_value(
 
 
 @pytest.mark.unit
-def test_no_public_setter_for_controller_settings_at_s2_b3(
+def test_setter_api_state_after_s2_d_1(
     configuration: ConfigurationModel,
 ) -> None:
-    """Setter API for controller/sim lands in S2.D, not S2.B.3 / S2.C.
+    """Setter API status as of S2.D.1.
 
-    PlotLayout setter DOES exist after S2.C (`set_plot_layout`); only
-    `set_controller_settings` and `set_simulation_settings` remain
-    deferred.
+    Present:
+      * `set_io_selection` — S2.B.3
+      * `set_plot_layout` — S2.C
+      * `set_controller_settings` — S2.D.1 (this commit)
+
+    Still deferred (lands S2.D.3 with simulation commands):
+      * `set_simulation_settings`
     """
-    assert not hasattr(configuration, "set_controller_settings")
-    assert not hasattr(configuration, "set_simulation_settings")
-    # Confirm S2.C added the plot layout setter (negative complement
-    # of the absence assertions above).
+    assert hasattr(configuration, "set_io_selection")
     assert hasattr(configuration, "set_plot_layout")
+    assert hasattr(configuration, "set_controller_settings")
+    assert not hasattr(configuration, "set_simulation_settings")
 
 
 # ====================================================================== #

@@ -8,22 +8,24 @@ SimulationSettings) are frozen value types — they cannot carry
 signals — so this class is the source of truth and signal
 producer.
 
-Phase-1 scope at S2.B.3 (this commit):
+Phase-1 incremental landing per the S2 plan:
 
-* Holds the three dataclasses by reference.
-* Emits `ioSelectionChanged(IOSelection)` on mutation.
-* Provides `set_io_selection(new)` mutation that no-ops on equal
-  values (matches the WorkspaceModel transition-only contract
-  per ADR-020).
+* S2.B.3 — `ioSelectionChanged(IOSelection)` signal +
+  `set_io_selection(new)` setter.
+* S2.C — `plotLayoutChanged(PlotLayout)` signal +
+  `set_plot_layout(new)` setter.
+* S2.D.1 — `controllerSettingsChanged(ControllerSettings)` signal +
+  `set_controller_settings(new)` setter; `is_dirty` + `dirtyChanged(bool)`
+  signal + internal `_set_dirty`/`_clear_dirty` for the
+  `ConfigurationCommandStack` clean-binding.
+* S2.D.3 — `simulationSettingsChanged(SimulationSettings)` signal +
+  `set_simulation_settings(new)` setter (the only remaining spec/03 §9
+  signal after S2.D.1).
 
-Deferred to S2.D (user-driven mutation commands):
-
-* `controllerSettingsChanged()`, `simulationSettingsChanged()`,
-  and `plotLayoutChanged()` signals.
-* Setter API for the remaining sections.
-
-The class name is permanent: adding the other three signals + setters
-in S2.D is a non-breaking widening of the API surface, not a rename.
+All mutations honor the ADR-020 transition-only emission rule: a
+setter that receives a value-equal object is a no-op and emits no
+signal, preventing subscriber storms under reactive feedback loops
+and matching `WorkspaceModel`'s contract one-for-one.
 
 References:
 ----------
@@ -39,11 +41,11 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Signal
 
+from .controller_settings import ControllerSettings
 from .io_selection import IOSelection
 from .plot_layout import PlotLayout
 
 if TYPE_CHECKING:
-    from .controller_settings import ControllerSettings
     from .simulation_settings import SimulationSettings
 
 
@@ -70,11 +72,16 @@ class ConfigurationModel(QObject):
             cheap").
     """
 
-    # S2.B.3 + S2.C signals. The remaining two spec/03 §9 signals
-    # (controllerSettingsChanged, simulationSettingsChanged) land
-    # in S2.D when user-driven mutation commands arrive.
+    # S2.B.3 / S2.C / S2.D.1 signals. The last remaining spec/03 §9
+    # signal (`simulationSettingsChanged`) lands in S2.D.3 alongside
+    # its setter.
     ioSelectionChanged = Signal(IOSelection)
     plotLayoutChanged = Signal(PlotLayout)
+    controllerSettingsChanged = Signal(ControllerSettings)
+    # S2.D.1 — module-level dirty bit. Mirrors `WorkspaceModel.dirtyChanged`
+    # so the shell's title-bar dirty indicator can OR both signals
+    # into a single project-level "dirty" view (spec/03 §9).
+    dirtyChanged = Signal(bool)
 
     def __init__(
         self,
@@ -91,6 +98,7 @@ class ConfigurationModel(QObject):
         self._io_selection: IOSelection = io_selection
         self._simulation_settings: SimulationSettings = simulation_settings
         self._plot_layout: PlotLayout = plot_layout
+        self._dirty: bool = False
 
     # ------------------------------------------------------------------ #
     # Read-only accessors
@@ -115,6 +123,16 @@ class ConfigurationModel(QObject):
     def plot_layout(self) -> PlotLayout:
         """The current `PlotLayout` (frozen value)."""
         return self._plot_layout
+
+    @property
+    def is_dirty(self) -> bool:
+        """Module-level dirty bit per ADR-020.
+
+        `True` after any mutation pushed via the command stack
+        until the stack returns to its clean index (or the model
+        is explicitly cleared by a persistence-layer save).
+        """
+        return self._dirty
 
     # ------------------------------------------------------------------ #
     # Mutations
@@ -150,6 +168,50 @@ class ConfigurationModel(QObject):
             return
         self._plot_layout = new
         self.plotLayoutChanged.emit(new)
+
+    def set_controller_settings(self, new: ControllerSettings) -> None:
+        """Install a new `ControllerSettings` and emit `controllerSettingsChanged`.
+
+        Full-replacement setter matching the S2.B.3 / S2.C pattern.
+        Per-controller mutations (add, remove, type change, parameter
+        edit) are produced caller-side via
+        `ControllerSettings.with_controller_added/removed/replaced`
+        and pushed through this entry point by the matching S2.D.1
+        commands. Transition-only emission per ADR-020.
+        """
+        if new == self._controller_settings:
+            return
+        self._controller_settings = new
+        self.controllerSettingsChanged.emit(new)
+
+    # ------------------------------------------------------------------ #
+    # Internal dirty helpers (called by ConfigurationCommandStack)
+    # ------------------------------------------------------------------ #
+
+    def _set_dirty(self) -> None:
+        """Mark the model dirty; emit `dirtyChanged(True)` on transition.
+
+        Internal helper, called by `ConfigurationCommandStack` when
+        a command pushes the underlying QUndoStack away from its
+        clean index. Transition-only emission per ADR-020: redundant
+        calls while already dirty are silent no-ops.
+        """
+        if self._dirty:
+            return
+        self._dirty = True
+        self.dirtyChanged.emit(True)
+
+    def _clear_dirty(self) -> None:
+        """Mark the model clean; emit `dirtyChanged(False)` on transition.
+
+        Called by the command stack on `cleanChanged(True)` (stack
+        index returned to its clean baseline) and by persistence
+        layer's save flow (S2.E). Transition-only per ADR-020.
+        """
+        if not self._dirty:
+            return
+        self._dirty = False
+        self.dirtyChanged.emit(False)
 
 
 __all__ = ["ConfigurationModel"]
