@@ -7,12 +7,14 @@ Per `06 §5.5`. Phase 1 surface:
 * `PhysicalAttributes` — component physical-attribute flags
   (`02 §11.2`) with `BoundaryKind`, `MotionKind`, `SourceKind`
   closed-set enums
-
-Additional Phase 1+ types (`ComponentCategory`, `ValidationSeverity`,
-`PlotType`, `ControllerType`) land in their owning stages and are
-added to this package as they become needed.
+* `ValidationReport` family — structured validation result types
+  shared across `SystemModelingModule.GraphValidator` and
+  `ControllerDesignModule.ConfigurationValidator`
+* `ComponentInstanceLike` — read-only Protocol view of a workspace
+  component instance for cross-feature consumers
 """
 
+from .component_protocols import ComponentInstanceLike
 from .domain import DomainId
 from .physical_attributes import (
     BoundaryKind,
@@ -21,12 +23,23 @@ from .physical_attributes import (
     SourceKind,
 )
 from .port_kind import PortKind
+from .validation_report import (
+    SubjectKind,
+    ValidationIssue,
+    ValidationReport,
+    ValidationSeverity,
+)
 
 __all__ = [
     "BoundaryKind",
+    "ComponentInstanceLike",
     "DomainId",
     "MotionKind",
     "PhysicalAttributes",
     "PortKind",
     "SourceKind",
+    "SubjectKind",
+    "ValidationIssue",
+    "ValidationReport",
+    "ValidationSeverity",
 ]
