@@ -20,23 +20,33 @@ References:
 """
 
 from .add_controller_command import AddControllerCommand
+from .add_io_input_command import AddIOInputCommand
+from .add_io_output_command import AddIOOutputCommand
 from .change_controller_type_command import ChangeControllerTypeCommand
 from .configuration_command_stack import (
     ConfigurationCommand,
     ConfigurationCommandStack,
 )
 from .edit_controller_parameter_command import EditControllerParameterCommand
+from .edit_io_entry_command import EditIOEntryCommand
 from .remove_controller_command import RemoveControllerCommand
+from .remove_io_input_command import RemoveIOInputCommand
+from .remove_io_output_command import RemoveIOOutputCommand
 from .set_controller_io_linkage_command import SetControllerIOLinkageCommand
 from .toggle_controller_enabled_command import ToggleControllerEnabledCommand
 
 __all__ = [
     "AddControllerCommand",
+    "AddIOInputCommand",
+    "AddIOOutputCommand",
     "ChangeControllerTypeCommand",
     "ConfigurationCommand",
     "ConfigurationCommandStack",
     "EditControllerParameterCommand",
+    "EditIOEntryCommand",
     "RemoveControllerCommand",
+    "RemoveIOInputCommand",
+    "RemoveIOOutputCommand",
     "SetControllerIOLinkageCommand",
     "ToggleControllerEnabledCommand",
 ]
