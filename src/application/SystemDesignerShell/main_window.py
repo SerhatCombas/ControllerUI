@@ -62,9 +62,17 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from PySide6.QtGui import QKeySequence
+from PySide6.QtGui import QKeySequence, QUndoGroup
 from PySide6.QtWidgets import QDockWidget, QMainWindow
 
+from features.ControllerDesignModule.commands import ConfigurationCommandStack
+from features.ControllerDesignModule.model import (
+    ConfigurationModel,
+    ControllerSettings,
+    IOSelection,
+    PlotLayout,
+    SimulationSettings,
+)
 from features.SystemModelingModule.commands import WorkspaceCommandStack
 from features.SystemModelingModule.model.workspace_model import WorkspaceModel
 from features.SystemModelingModule.model.workspace_validator_controller import (
@@ -86,6 +94,8 @@ from shared.registry import ComponentRegistry
 from shared.registry.builtin import BUILTIN_COMPONENT_DEFINITIONS
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from PySide6.QtWidgets import QWidget
 
     from features.SystemModelingModule.model.validation_report import (
@@ -103,6 +113,17 @@ _STATUS_TRANSIENT_MS: int = 4000
 # spec section ("remain until the user dismisses them or
 # another error replaces them").
 _STATUS_PERSISTENT_MS: int = 0
+
+# Untitled-project display name in the window title before the
+# user has saved the project (`_current_bundle_path is None`).
+# Update lives in `_update_window_title`; the value lands here so
+# tests can assert against it without depending on the string
+# formatting of `setWindowTitle`.
+_UNTITLED_PROJECT_NAME: str = "Untitled"
+
+# Suffix shared with the file save / open dialogs (S2.G.2) so the
+# directory-bundle suffix is defined in one place.
+_BUNDLE_SUFFIX: str = ".systemdesign"
 
 
 class SystemDesignerShell(QMainWindow):
@@ -140,6 +161,32 @@ class SystemDesignerShell(QMainWindow):
         # 5. Command stack — wires `cleanChanged` to model dirty bit.
         self._command_stack: WorkspaceCommandStack = WorkspaceCommandStack(self._model)
 
+        # 5b. Configuration model + command stack (S2.G.1). The
+        # configuration model holds the four spec/03 §9 sections
+        # (controller_settings, io_selection, simulation_settings,
+        # plot_layout) and emits the matching per-section signals.
+        # Phase-1 default sections come from `load_default_configuration()`
+        # but the shell builds the model with **empty** sections to
+        # keep the dirty bit `False` on bootstrap; the file menu's
+        # "New" action (S2.G.2) loads defaults explicitly when the
+        # user requests a new project.
+        self._configuration_model: ConfigurationModel = ConfigurationModel(
+            controller_settings=ControllerSettings(),
+            io_selection=IOSelection(),
+            simulation_settings=SimulationSettings(),
+            plot_layout=PlotLayout(),
+        )
+        self._configuration_command_stack: ConfigurationCommandStack = ConfigurationCommandStack(
+            self._configuration_model
+        )
+
+        # 5c. Current project bundle path (S2.G.1 placeholder;
+        # mutated by S2.G.2 Save / Open actions). `None` on
+        # bootstrap means "Untitled" — the title bar's project
+        # name segment renders the `_UNTITLED_PROJECT_NAME`
+        # constant in that state.
+        self._current_bundle_path: Path | None = None
+
         # 6. Workspace scene + 7. view.
         self._scene: WorkspaceScene = WorkspaceScene(self._model, command_stack=self._command_stack)
         self._view: WorkspaceView = WorkspaceView(self._scene)
@@ -169,15 +216,15 @@ class SystemDesignerShell(QMainWindow):
         self.addDockWidget(QtNamespace.DockWidgetArea.RightDockWidgetArea, info_dock)
         self._info_dock = info_dock
 
-        # 10. Edit menu (Undo / Redo).
+        # 10. Edit menu (Undo / Redo via QUndoGroup — S2.G.1).
         self._build_edit_menu()
 
         # 11. Status bar wiring.
         self.statusBar().showMessage("Ready", _STATUS_TRANSIENT_MS)
         self._wire_status_bar_signals()
 
-        # 12. Window title dirty indicator.
-        self._wire_window_title_dirty()
+        # 12. Window title — project name + dirty marker.
+        self._wire_window_title()
 
         logger.info(
             "SystemDesignerShell construction complete",
@@ -230,22 +277,91 @@ class SystemDesignerShell(QMainWindow):
         """The right-dock `ComponentInfoPanel`."""
         return self._info_panel
 
+    @property
+    def configuration_model(self) -> ConfigurationModel:
+        """The bound `ConfigurationModel` (S2.G.1)."""
+        return self._configuration_model
+
+    @property
+    def configuration_command_stack(self) -> ConfigurationCommandStack:
+        """The bound `ConfigurationCommandStack` (S2.G.1)."""
+        return self._configuration_command_stack
+
+    @property
+    def undo_group(self) -> QUndoGroup:
+        """The `QUndoGroup` composing workspace + configuration stacks.
+
+        Exposed for test convenience; the application Edit menu's
+        Undo / Redo actions route through this group so a single
+        Ctrl+Z reaches the most recently mutated stack.
+        """
+        return self._undo_group
+
+    @property
+    def current_bundle_path(self) -> Path | None:
+        """The current project's `.systemdesign/` bundle, or `None`.
+
+        Mutated by S2.G.2 Save / Open actions. Initial state is
+        `None` (Untitled project).
+        """
+        return self._current_bundle_path
+
     # ------------------------------------------------------------------ #
     # Menu / status / title wiring
     # ------------------------------------------------------------------ #
 
     def _build_edit_menu(self) -> None:
-        """Construct the Edit menu with Undo / Redo actions."""
+        """Construct the Edit menu, routing Undo / Redo through a QUndoGroup.
+
+        PD1 from the S2.D pre-scan locked Qt's native `QUndoGroup`
+        as the dispatch mechanism: each feature owns its own
+        `QUndoStack`, but the menu actions auto-route to whichever
+        stack is currently active. The active stack tracks the
+        most recently mutated one — `indexChanged` from a push
+        / undo / redo on either stack flips the active pointer
+        before the menu sees the next user gesture.
+
+        This preserves the per-feature architectural separation
+        (no shared stack, no cross-feature imports) while giving
+        the user a single Ctrl+Z timeline.
+        """
+        self._undo_group: QUndoGroup = QUndoGroup(self)
+        workspace_qstack = self._command_stack.stack
+        config_qstack = self._configuration_command_stack.stack
+        self._undo_group.addStack(workspace_qstack)
+        self._undo_group.addStack(config_qstack)
+
+        # Track the most-recently-mutated stack as active. Every
+        # push / undo / redo fires `indexChanged` on its stack;
+        # the slot makes that stack the group's active one so the
+        # menu actions reach it on the user's next Ctrl+Z. Edge
+        # case the user accepted on the S2.G.1 pre-scan: when the
+        # active stack runs out of undo, Ctrl+Z is disabled until
+        # the user touches the other stack — Phase-1 acceptable;
+        # focus-based switching is a Phase-2 polish item.
+        workspace_qstack.indexChanged.connect(
+            lambda _: self._undo_group.setActiveStack(workspace_qstack)
+        )
+        config_qstack.indexChanged.connect(lambda _: self._undo_group.setActiveStack(config_qstack))
+
         menu_bar = self.menuBar()
         edit_menu = menu_bar.addMenu("&Edit")
-        undo_action = edit_menu.addAction("&Undo")
+        undo_action = self._undo_group.createUndoAction(self, "&Undo")
         undo_action.setShortcut(QKeySequence.StandardKey.Undo)
-        undo_action.triggered.connect(self._command_stack.undo)
-        redo_action = edit_menu.addAction("&Redo")
+        edit_menu.addAction(undo_action)
+        redo_action = self._undo_group.createRedoAction(self, "&Redo")
         redo_action.setShortcut(QKeySequence.StandardKey.Redo)
-        redo_action.triggered.connect(self._command_stack.redo)
+        edit_menu.addAction(redo_action)
         self._undo_action = undo_action
         self._redo_action = redo_action
+
+        # Default active stack on bootstrap: workspace. The most
+        # likely first user action is dropping a component, which
+        # would set the active stack anyway — this default just
+        # makes Ctrl+Z route somewhere sensible if the user
+        # invokes it before any push (where it will be a no-op
+        # because the workspace stack is empty).
+        self._undo_group.setActiveStack(workspace_qstack)
 
     def _wire_status_bar_signals(self) -> None:
         """Subscribe the status bar to model events for live feedback.
@@ -272,9 +388,22 @@ class SystemDesignerShell(QMainWindow):
         # (the scene logs a warning and swallows the exception).
         self._scene.connectionRejected.connect(self._on_connection_rejected)
 
-    def _wire_window_title_dirty(self) -> None:
-        """Hook `dirtyChanged` so the window title gets a `*` suffix."""
+    def _wire_window_title(self) -> None:
+        """Wire both models' `dirtyChanged` signals to the title refresher.
+
+        Per the SI4 pre-scan decision: title combines the project
+        name (or `_UNTITLED_PROJECT_NAME` when no bundle is set)
+        with a `*` dirty marker whenever EITHER model is dirty.
+        OR'ing the two flags at refresh time is simpler than a
+        computed property and matches WorkspaceModel's existing
+        title pattern.
+        """
         self._model.dirtyChanged.connect(self._on_dirty_changed)
+        self._configuration_model.dirtyChanged.connect(self._on_dirty_changed)
+        # Initial title render so the bootstrap window doesn't
+        # show the stub from `__init__`'s `setWindowTitle` call
+        # while the project is empty.
+        self._update_window_title()
 
     # ------------------------------------------------------------------ #
     # Slots
@@ -356,10 +485,35 @@ class SystemDesignerShell(QMainWindow):
             _STATUS_PERSISTENT_MS,
         )
 
-    def _on_dirty_changed(self, is_dirty: bool) -> None:
-        """Append/remove the `*` suffix on the window title."""
-        base = "Engineering System Designer"
-        self.setWindowTitle(f"{base} *" if is_dirty else base)
+    def _on_dirty_changed(self, _is_dirty: bool) -> None:
+        """Refresh the window title.
+
+        Both models call this slot; the per-emission boolean is
+        ignored in favor of an OR over the two `is_dirty`
+        properties — that way we don't have to remember which
+        side fired most recently to compute the marker.
+        """
+        self._update_window_title()
+
+    def _update_window_title(self) -> None:
+        """Compose `'<project-name>[ *] — System Designer'` and apply it.
+
+        Helper isolates title formatting from the dirty-signal slot
+        so the file-action slots in S2.G.2 (Save As, Open, New)
+        can call this directly after mutating
+        `_current_bundle_path` without depending on a signal
+        emission to refresh the title.
+        """
+        is_dirty = self._model.is_dirty or self._configuration_model.is_dirty
+        if self._current_bundle_path is None:
+            project_name = _UNTITLED_PROJECT_NAME
+        else:
+            # `.stem` strips the `.systemdesign` suffix so the
+            # title shows "quarter_car" rather than
+            # "quarter_car.systemdesign".
+            project_name = self._current_bundle_path.stem
+        dirty_marker = " *" if is_dirty else ""
+        self.setWindowTitle(f"{project_name}{dirty_marker} — System Designer")
 
 
 __all__ = ["SystemDesignerShell"]

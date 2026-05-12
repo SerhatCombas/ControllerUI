@@ -146,11 +146,11 @@ def test_drop_then_undo_round_trip_returns_to_clean(
 
     shell.scene.drop_component(RESISTOR_DEFINITION.id, QPointF(80.0, 80.0))
     assert dirty(shell) is True
-    assert shell.windowTitle().endswith(" *")
+    assert " * " in shell.windowTitle()
 
     shell._undo_action.trigger()
     assert dirty(shell) is False
-    assert not shell.windowTitle().endswith(" *")
+    assert " * " not in shell.windowTitle()
 
 
 # ---------------------------------------------------------------------------- #

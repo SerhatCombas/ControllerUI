@@ -73,7 +73,7 @@ def shell(request: pytest.FixtureRequest) -> SystemDesignerShell:
 def test_shell_constructs_without_exception(shell: SystemDesignerShell) -> None:
     """Shell `__init__` runs to completion under the session QApplication."""
     assert shell is not None
-    assert shell.windowTitle() == "Engineering System Designer"
+    assert shell.windowTitle() == "Untitled — System Designer"
 
 
 @pytest.mark.integration
@@ -178,7 +178,7 @@ def test_connection_removed_clears_via_transient_message(
 @pytest.mark.integration
 def test_shell_starts_clean(shell: SystemDesignerShell) -> None:
     """A freshly constructed shell has no `*` suffix."""
-    assert shell.windowTitle() == "Engineering System Designer"
+    assert shell.windowTitle() == "Untitled — System Designer"
     assert shell.model.is_dirty is False
 
 
@@ -187,7 +187,7 @@ def test_pushing_command_marks_title_dirty(shell: SystemDesignerShell) -> None:
     """Mutating via the command stack adds the `*` suffix."""
     cmd = AddComponentCommand(shell.model, RESISTOR_DEFINITION.id, QPointF(0.0, 0.0))
     shell.command_stack.push(cmd)
-    assert shell.windowTitle().endswith(" *")
+    assert " * " in shell.windowTitle()
     assert shell.model.is_dirty is True
 
 
@@ -198,7 +198,7 @@ def test_undo_back_to_clean_index_clears_dirty_indicator(
     """`cleanChanged(True)` clears the `*` suffix via the dirty bit."""
     cmd = AddComponentCommand(shell.model, RESISTOR_DEFINITION.id, QPointF(0.0, 0.0))
     shell.command_stack.push(cmd)
-    assert shell.windowTitle().endswith(" *")
+    assert " * " in shell.windowTitle()
     shell.command_stack.undo()
-    assert not shell.windowTitle().endswith(" *")
+    assert " * " not in shell.windowTitle()
     assert shell.model.is_dirty is False
