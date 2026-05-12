@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QObject, Signal
 
 from .io_selection import IOSelection
+from .plot_layout import PlotLayout
 
 if TYPE_CHECKING:
     from .controller_settings import ControllerSettings
@@ -69,11 +70,11 @@ class ConfigurationModel(QObject):
             cheap").
     """
 
-    # S2.B.3 signal. Other three spec/03 §9 signals
-    # (controllerSettingsChanged, simulationSettingsChanged,
-    # plotLayoutChanged) land in S2.D when the matching setter API
-    # arrives.
+    # S2.B.3 + S2.C signals. The remaining two spec/03 §9 signals
+    # (controllerSettingsChanged, simulationSettingsChanged) land
+    # in S2.D when user-driven mutation commands arrive.
     ioSelectionChanged = Signal(IOSelection)
+    plotLayoutChanged = Signal(PlotLayout)
 
     def __init__(
         self,
@@ -81,6 +82,7 @@ class ConfigurationModel(QObject):
         controller_settings: ControllerSettings,
         io_selection: IOSelection,
         simulation_settings: SimulationSettings,
+        plot_layout: PlotLayout,
         parent: QObject | None = None,
     ) -> None:
         """Construct the model with starting values for every section."""
@@ -88,6 +90,7 @@ class ConfigurationModel(QObject):
         self._controller_settings: ControllerSettings = controller_settings
         self._io_selection: IOSelection = io_selection
         self._simulation_settings: SimulationSettings = simulation_settings
+        self._plot_layout: PlotLayout = plot_layout
 
     # ------------------------------------------------------------------ #
     # Read-only accessors
@@ -108,6 +111,11 @@ class ConfigurationModel(QObject):
         """The current `SimulationSettings` (frozen value)."""
         return self._simulation_settings
 
+    @property
+    def plot_layout(self) -> PlotLayout:
+        """The current `PlotLayout` (frozen value)."""
+        return self._plot_layout
+
     # ------------------------------------------------------------------ #
     # Mutations
     # ------------------------------------------------------------------ #
@@ -125,6 +133,23 @@ class ConfigurationModel(QObject):
             return
         self._io_selection = new
         self.ioSelectionChanged.emit(new)
+
+    def set_plot_layout(self, new: PlotLayout) -> None:
+        """Install a new `PlotLayout` and emit `plotLayoutChanged`.
+
+        Same transition-only contract as `set_io_selection`. The
+        Phase-1 API is deliberately a full-replacement setter only:
+        partial mutations (per-slot plot_type, per-slot
+        channel_selection) are produced on the caller side using
+        `PlotSlotConfig.with_plot_type` + `PlotLayout.with_slot_replaced`
+        and pushed through this single entry point. S2.D
+        `ChangePlotTypeCommand` will follow the same shape; no
+        per-slot setter is added here so the API stays narrow.
+        """
+        if new == self._plot_layout:
+            return
+        self._plot_layout = new
+        self.plotLayoutChanged.emit(new)
 
 
 __all__ = ["ConfigurationModel"]

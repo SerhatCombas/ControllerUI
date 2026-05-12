@@ -14,10 +14,10 @@ unique controller id per ADR-002 (ULIDs are never reused). This
 keeps the JSON file usable as a template across projects without
 relying on the never-reused promise.
 
-The PlotLayout default section is **not** present in this file:
-plot dataclasses arrive in S2.C, and `default_config.json` will be
-extended in that sub-commit. The aggregator `load_default_configuration`
-therefore returns a 3-tuple, not a 4-tuple, until S2.C lands.
+The PlotLayout default section (S2.C) is read alongside the
+three S2.B.1 sections; the JSON file now carries all four. The
+`DefaultConfiguration` aggregator exposes `plot_layout` as a
+fourth field.
 
 References:
 ----------
@@ -36,6 +36,7 @@ from typing import Any
 from .controller_settings import ControllerSettings
 from .id_generator import new_controller_id
 from .io_selection import IOSelection
+from .plot_layout import PlotLayout
 from .simulation_settings import SimulationSettings
 
 # Resource path inside the installed package. `importlib.resources`
@@ -55,15 +56,12 @@ class DefaultConfiguration:
     a fresh instance — re-calling the loader produces new dataclass
     instances with new generated ULIDs where applicable, so callers
     do not accidentally share mutable state between projects.
-
-    PlotLayout is not yet present (lands in S2.C); extending this
-    container at that stage is a non-breaking change because no
-    consumer indexes by position.
     """
 
     controller_settings: ControllerSettings
     io_selection: IOSelection
     simulation_settings: SimulationSettings
+    plot_layout: PlotLayout
 
 
 def _read_default_payload() -> dict[str, Any]:
@@ -121,8 +119,17 @@ def load_default_simulation_settings() -> SimulationSettings:
     return SimulationSettings.from_dict(section)
 
 
+def load_default_plot_layout() -> PlotLayout:
+    """Return a fresh `PlotLayout` from `default_config.json` (spec §13)."""
+    payload = _read_default_payload()
+    section = payload.get("plot_layout", {})
+    if not isinstance(section, dict):
+        section = {}
+    return PlotLayout.from_dict(section)
+
+
 def load_default_configuration() -> DefaultConfiguration:
-    """Return all three Phase-1 default sections in one call.
+    """Return all four Phase-1 default sections in one call.
 
     Convenience aggregator for the "New Project" bootstrap path.
     Each call reads the JSON file once and produces fresh
@@ -133,6 +140,7 @@ def load_default_configuration() -> DefaultConfiguration:
         controller_settings=load_default_controller_settings(),
         io_selection=load_default_io_selection(),
         simulation_settings=load_default_simulation_settings(),
+        plot_layout=load_default_plot_layout(),
     )
 
 
@@ -141,5 +149,6 @@ __all__ = [
     "load_default_configuration",
     "load_default_controller_settings",
     "load_default_io_selection",
+    "load_default_plot_layout",
     "load_default_simulation_settings",
 ]

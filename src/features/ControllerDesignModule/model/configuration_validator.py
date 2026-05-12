@@ -51,6 +51,8 @@ from typing import TYPE_CHECKING, Final
 
 from shared.types import ValidationIssue, ValidationReport
 
+from .plot_layout import PLOT_TYPE_KIND_MAP
+
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
@@ -59,6 +61,7 @@ if TYPE_CHECKING:
 
     from .controller_settings import ControllerSettings, ControllerSpec
     from .io_selection import IOEntry, IOSelection
+    from .plot_layout import PlotLayout, PlotSlotConfig
     from .simulation_settings import SimulationSettings
 
 
@@ -87,6 +90,7 @@ class ConfigurationValidator:
         *,
         components: Mapping[str, ComponentInstanceLike],
         registry: ComponentRegistry,
+        plot_layout: PlotLayout | None = None,
     ) -> ValidationReport:
         """Run every Phase-1 rule and return the aggregated report.
 
@@ -101,19 +105,31 @@ class ConfigurationValidator:
             registry: `ComponentRegistry` resolving each component's
                 `definition_id` to its `PortDefinition` list. Used
                 for the missing-port check.
+            plot_layout: Optional `PlotLayout` to validate. Defaults
+                to an empty layout (no plot-side issues raised). Made
+                optional so pre-S2.C call sites keep working without
+                churn; S2.C+ callers pass it explicitly.
 
         Returns:
-            `ValidationReport` carrying every issue produced by the
-            five rules. An empty report means the configuration is
+            `ValidationReport` carrying every issue produced by all
+            rules. An empty report means the configuration is
             internally consistent and consistent with the supplied
             workspace snapshot.
         """
+        # Local import keeps the module import-time cost low and
+        # avoids forcing `PlotLayout` into the TYPE_CHECKING-only
+        # signature when the caller omits the argument.
+        from .plot_layout import PlotLayout as _PlotLayout
+
+        effective_layout: PlotLayout = plot_layout if plot_layout is not None else _PlotLayout()
         issues: list[ValidationIssue] = []
         issues.extend(self._check_simulation_time_bounds(simulation_settings))
         issues.extend(self._check_unsupported_solver(simulation_settings))
         issues.extend(self._check_unsupported_controller_type(controller_settings))
         issues.extend(self._check_controller_io_linkage(controller_settings, io_selection))
         issues.extend(self._check_io_workspace_references(io_selection, components, registry))
+        issues.extend(self._check_plot_type_known(effective_layout))
+        issues.extend(self._check_channel_selection_kind_match(effective_layout))
         return ValidationReport(issues=tuple(issues))
 
     # ------------------------------------------------------------------ #
@@ -203,6 +219,36 @@ class ConfigurationValidator:
                 continue
             if not any(p.id == port_ref.port_id for p in definition.ports):
                 yield _issue_stale_io_port_ref(entry, port_ref.port_id)
+
+    # ------------------------------------------------------------------ #
+    # Rule 6 — unknown plot_type (spec/03 §8.4 + §12.2)
+    # ------------------------------------------------------------------ #
+
+    def _check_plot_type_known(self, plot_layout: PlotLayout) -> Iterable[ValidationIssue]:
+        """Warn for any slot whose `plot_type` is not in the Phase-1+2 map."""
+        for slot in plot_layout.slots:
+            if slot.plot_type not in PLOT_TYPE_KIND_MAP:
+                yield _issue_unknown_plot_type(slot)
+
+    # ------------------------------------------------------------------ #
+    # Rule 7 — channel_selection.kind ↔ plot_type compatibility
+    # (spec/03 §8.6 + §10.1)
+    # ------------------------------------------------------------------ #
+
+    def _check_channel_selection_kind_match(
+        self, plot_layout: PlotLayout
+    ) -> Iterable[ValidationIssue]:
+        """Error when a slot's `channel_selection.kind` doesn't match its `plot_type`.
+
+        Unknown plot_types are skipped here (no canonical kind to
+        compare against); rule 6 already surfaces them as warnings.
+        """
+        for slot in plot_layout.slots:
+            expected_kind = PLOT_TYPE_KIND_MAP.get(slot.plot_type)
+            if expected_kind is None:
+                continue
+            if slot.channel_selection.kind != expected_kind:
+                yield _issue_channel_selection_kind_mismatch(slot, expected_kind)
 
 
 # ====================================================================== #
@@ -361,6 +407,49 @@ def _issue_stale_io_port_ref(entry: IOEntry, port_id: str) -> ValidationIssue:
         subject_kind="component",
         subject_id=None,
         context={"io_entry_id": entry.id, "port_id": port_id},
+    )
+
+
+def _issue_unknown_plot_type(slot: PlotSlotConfig) -> ValidationIssue:
+    code = "warning.validation.unknown_plot_type"
+    return ValidationIssue(
+        issue_id=f"{code}|{slot.slot_id}",
+        severity="warning",
+        code=code,
+        message=(
+            f"plot slot {slot.slot_id!r} has plot_type "
+            f"{slot.plot_type!r}, which is outside the known set. "
+            f"The value is preserved on save and rendered as a "
+            f"placeholder per spec/03 §12.2."
+        ),
+        subject_kind="workspace",
+        subject_id=None,
+        context={"slot_id": slot.slot_id, "plot_type": slot.plot_type},
+    )
+
+
+def _issue_channel_selection_kind_mismatch(
+    slot: PlotSlotConfig, expected_kind: str
+) -> ValidationIssue:
+    code = "error.validation.channel_selection_kind_mismatch"
+    return ValidationIssue(
+        issue_id=f"{code}|{slot.slot_id}",
+        severity="error",
+        code=code,
+        message=(
+            f"plot slot {slot.slot_id!r} uses plot_type "
+            f"{slot.plot_type!r} (kind {expected_kind!r}) but its "
+            f"channel_selection.kind is "
+            f"{slot.channel_selection.kind!r}."
+        ),
+        subject_kind="workspace",
+        subject_id=None,
+        context={
+            "slot_id": slot.slot_id,
+            "plot_type": slot.plot_type,
+            "expected_kind": expected_kind,
+            "actual_kind": slot.channel_selection.kind,
+        },
     )
 
 

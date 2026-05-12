@@ -13,14 +13,17 @@ from importlib.resources import files
 import pytest
 
 from features.ControllerDesignModule.model import (
+    PLOT_TYPE_KIND_MAP,
     ControllerSettings,
     DefaultConfiguration,
     IOSelection,
+    PlotLayout,
     SimulationSettings,
     is_controller_id,
     load_default_configuration,
     load_default_controller_settings,
     load_default_io_selection,
+    load_default_plot_layout,
     load_default_simulation_settings,
 )
 
@@ -36,11 +39,11 @@ def test_default_config_json_is_packaged_and_parseable() -> None:
     assert resource.is_file(), "default_config.json must be packaged"
     payload = json.loads(resource.read_text(encoding="utf-8"))
     assert isinstance(payload, dict)
-    # The three Phase-1 sections must be present; plot_layout
-    # arrives in S2.C.
+    # All four Phase-1 sections must be present after S2.C.
     assert "controller_settings" in payload
     assert "io_selection" in payload
     assert "simulation_settings" in payload
+    assert "plot_layout" in payload
 
 
 # ---------------------------------------------------------------------- #
@@ -118,18 +121,53 @@ def test_default_simulation_settings_matches_spec_section_13() -> None:
 
 
 # ---------------------------------------------------------------------- #
+# PlotLayout defaults match spec §13
+# ---------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+def test_default_plot_layout_has_four_slots_with_spec_defaults() -> None:
+    """Spec §13: four slots — time_response, step_response, bode, pole_zero."""
+    layout = load_default_plot_layout()
+    assert isinstance(layout, PlotLayout)
+    assert len(layout.slots) == 4
+    assert [s.slot_id for s in layout.slots] == [
+        "plot_1",
+        "plot_2",
+        "plot_3",
+        "plot_4",
+    ]
+    assert [s.plot_type for s in layout.slots] == [
+        "time_response",
+        "step_response",
+        "bode",
+        "pole_zero",
+    ]
+    # Each slot's channel_selection.kind matches PLOT_TYPE_KIND_MAP.
+    for slot in layout.slots:
+        assert slot.channel_selection.kind == PLOT_TYPE_KIND_MAP[slot.plot_type]
+
+
+@pytest.mark.unit
+def test_default_plot_layout_has_no_fullscreen_slot() -> None:
+    """Spec §13 + §8.9: `fullscreen_slot_id` is `None` on a fresh project."""
+    assert load_default_plot_layout().fullscreen_slot_id is None
+
+
+# ---------------------------------------------------------------------- #
 # Aggregate loader
 # ---------------------------------------------------------------------- #
 
 
 @pytest.mark.unit
-def test_load_default_configuration_returns_all_three_sections() -> None:
-    """`load_default_configuration()` aggregates the three Phase-1 sections."""
+def test_load_default_configuration_returns_all_four_sections() -> None:
+    """`load_default_configuration()` aggregates all four Phase-1 sections."""
     cfg = load_default_configuration()
     assert isinstance(cfg, DefaultConfiguration)
     assert isinstance(cfg.controller_settings, ControllerSettings)
     assert isinstance(cfg.io_selection, IOSelection)
     assert isinstance(cfg.simulation_settings, SimulationSettings)
+    assert isinstance(cfg.plot_layout, PlotLayout)
 
 
 @pytest.mark.unit

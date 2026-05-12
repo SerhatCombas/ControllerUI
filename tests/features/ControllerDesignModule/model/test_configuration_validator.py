@@ -17,12 +17,15 @@ import pytest
 from PySide6.QtCore import QPointF
 
 from features.ControllerDesignModule.model import (
+    ChannelSelection,
     ConfigurationValidator,
     ControllerSettings,
     ControllerSpec,
     IOEntry,
     IOSelection,
     IOSourcePortRef,
+    PlotLayout,
+    PlotSlotConfig,
     SimulationSettings,
     load_default_configuration,
 )
@@ -400,6 +403,161 @@ def test_multiple_independent_issues_all_appear_in_one_report(
         "warning.validation.stale_io_component_ref",
     }
     assert expected.issubset(codes)
+
+
+# ====================================================================== #
+# Rule 6 — unknown plot_type (warning per spec §10.2 + §12.2)
+# ====================================================================== #
+
+
+@pytest.mark.unit
+def test_default_plot_layout_produces_no_plot_warnings(
+    registry: ComponentRegistry,
+) -> None:
+    """The four Phase-1 default plot slots are all in the known set."""
+    cfg = load_default_configuration()
+    report = _validator().validate(
+        cfg.controller_settings,
+        cfg.io_selection,
+        cfg.simulation_settings,
+        components={},
+        registry=registry,
+        plot_layout=cfg.plot_layout,
+    )
+    assert not any("unknown_plot_type" in i.code for i in report.issues)
+    assert not any("channel_selection_kind_mismatch" in i.code for i in report.issues)
+
+
+@pytest.mark.unit
+def test_unknown_plot_type_emits_warning(registry: ComponentRegistry) -> None:
+    """Any plot_type outside `PLOT_TYPE_KIND_MAP` produces a warning."""
+    slot = PlotSlotConfig(
+        slot_id="plot_1",
+        plot_type="future_unknown",
+        channel_selection=ChannelSelection(kind="channels"),
+    )
+    layout = PlotLayout(slots=(slot,))
+    report = _validator().validate(
+        ControllerSettings(),
+        IOSelection(),
+        SimulationSettings(),
+        components={},
+        registry=registry,
+        plot_layout=layout,
+    )
+    warns = report.by_severity("warning")
+    codes = {w.code for w in warns}
+    assert "warning.validation.unknown_plot_type" in codes
+
+
+@pytest.mark.unit
+def test_unknown_plot_type_does_not_emit_kind_mismatch(
+    registry: ComponentRegistry,
+) -> None:
+    """Unknown plot_type: no canonical kind → no mismatch error generated."""
+    slot = PlotSlotConfig(
+        slot_id="plot_1",
+        plot_type="future_unknown",
+        channel_selection=ChannelSelection(kind="channels"),
+    )
+    layout = PlotLayout(slots=(slot,))
+    report = _validator().validate(
+        ControllerSettings(),
+        IOSelection(),
+        SimulationSettings(),
+        components={},
+        registry=registry,
+        plot_layout=layout,
+    )
+    assert not any("channel_selection_kind_mismatch" in i.code for i in report.issues)
+
+
+# ====================================================================== #
+# Rule 7 — channel_selection.kind ↔ plot_type mismatch (error)
+# ====================================================================== #
+
+
+@pytest.mark.unit
+def test_kind_mismatch_emits_error(registry: ComponentRegistry) -> None:
+    """`bode` (io_pair) with `kind="channels"` → schema-level error."""
+    slot = PlotSlotConfig(
+        slot_id="plot_3",
+        plot_type="bode",  # expects io_pair
+        channel_selection=ChannelSelection(kind="channels"),  # mismatch
+    )
+    layout = PlotLayout(slots=(slot,))
+    report = _validator().validate(
+        ControllerSettings(),
+        IOSelection(),
+        SimulationSettings(),
+        components={},
+        registry=registry,
+        plot_layout=layout,
+    )
+    errors = report.by_severity("error")
+    codes = {e.code for e in errors}
+    assert "error.validation.channel_selection_kind_mismatch" in codes
+    # Confirm the issue carries context for downstream UI surfacing.
+    mismatch = next(
+        e for e in errors if e.code == "error.validation.channel_selection_kind_mismatch"
+    )
+    assert mismatch.context["expected_kind"] == "io_pair"
+    assert mismatch.context["actual_kind"] == "channels"
+
+
+@pytest.mark.unit
+def test_matching_kinds_produce_no_error(registry: ComponentRegistry) -> None:
+    """All Phase-1 plot_type defaults match their kinds → no mismatch."""
+    layout = PlotLayout(
+        slots=(
+            PlotSlotConfig(
+                slot_id="plot_1",
+                plot_type="time_response",
+                channel_selection=ChannelSelection(kind="channels"),
+            ),
+            PlotSlotConfig(
+                slot_id="plot_2",
+                plot_type="bode",
+                channel_selection=ChannelSelection(kind="io_pair"),
+            ),
+            PlotSlotConfig(
+                slot_id="plot_3",
+                plot_type="pole_zero",
+                channel_selection=ChannelSelection(kind="system_wide"),
+            ),
+        )
+    )
+    report = _validator().validate(
+        ControllerSettings(),
+        IOSelection(),
+        SimulationSettings(),
+        components={},
+        registry=registry,
+        plot_layout=layout,
+    )
+    assert not any("channel_selection_kind_mismatch" in i.code for i in report.issues)
+
+
+# ====================================================================== #
+# plot_layout argument is optional (backward-compat)
+# ====================================================================== #
+
+
+@pytest.mark.unit
+def test_validate_without_plot_layout_argument_still_works(
+    registry: ComponentRegistry,
+) -> None:
+    """Omitting `plot_layout=` makes the validator skip plot rules entirely."""
+    report = _validator().validate(
+        ControllerSettings(),
+        IOSelection(),
+        SimulationSettings(),
+        components={},
+        registry=registry,
+    )
+    # Empty default layout → no plot issues raised.
+    assert not any("plot_type" in i.code for i in report.issues)
+    assert not any("channel_selection_kind_mismatch" in i.code for i in report.issues)
 
 
 @pytest.mark.unit

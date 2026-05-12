@@ -20,6 +20,7 @@ from features.ControllerDesignModule.model import (
     IOEntry,
     IOSelection,
     IOSourcePortRef,
+    PlotLayout,
     SimulationSettings,
 )
 from features.ControllerDesignModule.observers import WorkspaceReactivityObserver
@@ -56,6 +57,7 @@ def configuration_factory() -> ConfigurationFactory:
             controller_settings=ControllerSettings(),
             io_selection=IOSelection(inputs=inputs, outputs=outputs),
             simulation_settings=SimulationSettings(),
+            plot_layout=PlotLayout(),
         )
 
     return _factory
@@ -249,6 +251,7 @@ def test_metadata_and_extensions_survive_stale_flip(
             extensions={"future_field": 42},
         ),
         simulation_settings=SimulationSettings(),
+        plot_layout=PlotLayout(),
     )
     observer = WorkspaceReactivityObserver(configuration=config)
     workspace = _StubWorkspace()

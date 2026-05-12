@@ -51,6 +51,8 @@
     "warning.validation.stale_controller_output_ref": "Enabled controller {controller_id} references output {output_ref}, which is not present in io_selection.outputs.",
     "warning.validation.stale_io_component_ref": "I/O entry {io_entry_id} references component {component_id}, which is not present in the workspace.",
     "warning.validation.stale_io_port_ref": "I/O entry {io_entry_id} references port {port_id}, which is not declared on the target component's definition.",
+    "warning.validation.unknown_plot_type": "Plot slot {slot_id} has plot_type {plot_type}, which is outside the known set; preserved on save and rendered as a placeholder.",
+    "error.validation.channel_selection_kind_mismatch": "Plot slot {slot_id} uses plot_type {plot_type} (kind {expected_kind}) but its channel_selection.kind is {actual_kind}.",
     "error.persistence.save_failed": "Project save failed: {reason}.",
     "error.persistence.load_failed": "Project load failed: {reason}.",
     "error.persistence.invalid_package_structure": "Invalid .systemdesign/ package structure: {reason}.",

@@ -24,6 +24,7 @@ from features.ControllerDesignModule.model import (
     IOEntry,
     IOSelection,
     IOSourcePortRef,
+    PlotLayout,
     SimulationSettings,
 )
 from features.ControllerDesignModule.observers import WorkspaceReactivityObserver
@@ -57,6 +58,7 @@ def test_end_to_end_stale_flip_on_real_workspace_component_removal() -> None:
         controller_settings=ControllerSettings(),
         io_selection=IOSelection(inputs=(io_entry,)),
         simulation_settings=SimulationSettings(),
+        plot_layout=PlotLayout(),
     )
     observer = WorkspaceReactivityObserver(configuration=configuration)
     observer.attach_to_workspace_signals(workspace)
@@ -98,6 +100,7 @@ def test_removing_unreferenced_component_does_not_alter_io_selection() -> None:
         controller_settings=ControllerSettings(),
         io_selection=IOSelection(inputs=(io_entry,)),
         simulation_settings=SimulationSettings(),
+        plot_layout=PlotLayout(),
     )
     observer = WorkspaceReactivityObserver(configuration=configuration)
     observer.attach_to_workspace_signals(workspace)

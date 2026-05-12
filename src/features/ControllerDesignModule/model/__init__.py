@@ -46,6 +46,7 @@ from .defaults import (
     load_default_configuration,
     load_default_controller_settings,
     load_default_io_selection,
+    load_default_plot_layout,
     load_default_simulation_settings,
 )
 from .id_generator import (
@@ -68,6 +69,15 @@ from .io_selection import (
     IOSourcePortRef,
     io_source_from_dict,
 )
+from .plot_layout import (
+    PLOT_TYPE_KIND_MAP,
+    AxisConfig,
+    ChannelSelection,
+    PlotKind,
+    PlotLayout,
+    PlotSlotConfig,
+    default_channel_selection_for_kind,
+)
 from .simulation_settings import (
     InitialConditionOverride,
     InitialConditions,
@@ -79,7 +89,10 @@ __all__: list[str] = [
     "CONTROLLER_ID_PREFIX",
     "IO_INPUT_ID_PREFIX",
     "IO_OUTPUT_ID_PREFIX",
+    "PLOT_TYPE_KIND_MAP",
+    "AxisConfig",
     "BondGraphVariable",
+    "ChannelSelection",
     "ConfigurationModel",
     "ConfigurationValidator",
     "ControllerSettings",
@@ -93,7 +106,11 @@ __all__: list[str] = [
     "InitialConditionOverride",
     "InitialConditions",
     "InitialConditionsSource",
+    "PlotKind",
+    "PlotLayout",
+    "PlotSlotConfig",
     "SimulationSettings",
+    "default_channel_selection_for_kind",
     "io_source_from_dict",
     "is_controller_id",
     "is_io_input_id",
@@ -101,6 +118,7 @@ __all__: list[str] = [
     "load_default_configuration",
     "load_default_controller_settings",
     "load_default_io_selection",
+    "load_default_plot_layout",
     "load_default_simulation_settings",
     "new_controller_id",
     "new_io_input_id",

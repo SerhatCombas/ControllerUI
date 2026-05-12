@@ -383,6 +383,8 @@ the rule that produced each issue.
 | `warning.validation.stale_controller_output_ref` | warning | Enabled controller's `output_ref` does not resolve to any entry in `io_selection.outputs` |
 | `warning.validation.stale_io_component_ref` | warning | I/O entry source references a component id that is not present in the workspace |
 | `warning.validation.stale_io_port_ref` | warning | I/O entry source references a port id that is not declared on the target component's definition |
+| `warning.validation.unknown_plot_type` | warning | Plot slot uses a `plot_type` outside the known set; value preserved on save and rendered as a placeholder per spec §12.2 |
+| `error.validation.channel_selection_kind_mismatch` | error | Plot slot's `channel_selection.kind` does not match the kind required by its `plot_type` per spec §8.6 |
 
 ### 7.8 Persistence Errors
 

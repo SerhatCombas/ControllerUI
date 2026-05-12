@@ -40,5 +40,96 @@
     },
     "metadata": {},
     "extensions": {}
+  },
+  "plot_layout": {
+    "slots": [
+      {
+        "slot_id": "plot_1",
+        "plot_type": "time_response",
+        "title": "Time Response",
+        "channel_selection": {
+          "kind": "channels",
+          "channels": [],
+          "input": null,
+          "output": null,
+          "metadata": {},
+          "extensions": {}
+        },
+        "axis_config": {
+          "x_label": null,
+          "y_label": null,
+          "x_range": null,
+          "y_range": null
+        },
+        "metadata": {},
+        "extensions": {}
+      },
+      {
+        "slot_id": "plot_2",
+        "plot_type": "step_response",
+        "title": "Step Response",
+        "channel_selection": {
+          "kind": "io_pair",
+          "channels": [],
+          "input": null,
+          "output": null,
+          "metadata": {},
+          "extensions": {}
+        },
+        "axis_config": {
+          "x_label": null,
+          "y_label": null,
+          "x_range": null,
+          "y_range": null
+        },
+        "metadata": {},
+        "extensions": {}
+      },
+      {
+        "slot_id": "plot_3",
+        "plot_type": "bode",
+        "title": "Bode",
+        "channel_selection": {
+          "kind": "io_pair",
+          "channels": [],
+          "input": null,
+          "output": null,
+          "metadata": {},
+          "extensions": {}
+        },
+        "axis_config": {
+          "x_label": null,
+          "y_label": null,
+          "x_range": null,
+          "y_range": null
+        },
+        "metadata": {},
+        "extensions": {}
+      },
+      {
+        "slot_id": "plot_4",
+        "plot_type": "pole_zero",
+        "title": "Pole-Zero",
+        "channel_selection": {
+          "kind": "system_wide",
+          "channels": [],
+          "input": null,
+          "output": null,
+          "metadata": {},
+          "extensions": {}
+        },
+        "axis_config": {
+          "x_label": null,
+          "y_label": null,
+          "x_range": null,
+          "y_range": null
+        },
+        "metadata": {},
+        "extensions": {}
+      }
+    ],
+    "fullscreen_slot_id": null,
+    "metadata": {},
+    "extensions": {}
   }
 }

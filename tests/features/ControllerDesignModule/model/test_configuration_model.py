@@ -17,6 +17,7 @@ from features.ControllerDesignModule.model import (
     IOEntry,
     IOSelection,
     IOSourcePortRef,
+    PlotLayout,
     SimulationSettings,
     load_default_configuration,
 )
@@ -41,6 +42,7 @@ def configuration() -> ConfigurationModel:
         controller_settings=cfg.controller_settings,
         io_selection=cfg.io_selection,
         simulation_settings=cfg.simulation_settings,
+        plot_layout=cfg.plot_layout,
     )
 
 
@@ -65,14 +67,17 @@ def test_configuration_model_holds_initial_values_by_reference() -> None:
     cs = ControllerSettings(controllers=(ControllerSpec(id="ctrl_X", controller_type="P"),))
     ios = IOSelection()
     sim = SimulationSettings(stop_time=42.0)
+    plot = PlotLayout()
     model = ConfigurationModel(
         controller_settings=cs,
         io_selection=ios,
         simulation_settings=sim,
+        plot_layout=plot,
     )
     assert model.controller_settings is cs
     assert model.io_selection is ios
     assert model.simulation_settings is sim
+    assert model.plot_layout is plot
 
 
 # ====================================================================== #
@@ -162,6 +167,77 @@ def test_set_io_selection_payload_carries_full_new_value(
 def test_no_public_setter_for_controller_settings_at_s2_b3(
     configuration: ConfigurationModel,
 ) -> None:
-    """Setter API for controller/sim/plot lands in S2.D, not S2.B.3."""
+    """Setter API for controller/sim lands in S2.D, not S2.B.3 / S2.C.
+
+    PlotLayout setter DOES exist after S2.C (`set_plot_layout`); only
+    `set_controller_settings` and `set_simulation_settings` remain
+    deferred.
+    """
     assert not hasattr(configuration, "set_controller_settings")
     assert not hasattr(configuration, "set_simulation_settings")
+    # Confirm S2.C added the plot layout setter (negative complement
+    # of the absence assertions above).
+    assert hasattr(configuration, "set_plot_layout")
+
+
+# ====================================================================== #
+# S2.C — plot_layout property + setter + signal
+# ====================================================================== #
+
+
+@pytest.mark.unit
+def test_plot_layout_accessor_returns_initial_value(
+    configuration: ConfigurationModel,
+) -> None:
+    """`plot_layout` property returns the constructed-in value."""
+    from features.ControllerDesignModule.model import PlotLayout as _PlotLayout
+
+    assert isinstance(configuration.plot_layout, _PlotLayout)
+
+
+@pytest.mark.unit
+def test_set_plot_layout_with_new_value_emits_signal(
+    configuration: ConfigurationModel,
+) -> None:
+    """A genuinely-new PlotLayout fires `plotLayoutChanged` exactly once."""
+    from features.ControllerDesignModule.model import (
+        ChannelSelection,
+        PlotSlotConfig,
+    )
+    from features.ControllerDesignModule.model import (
+        PlotLayout as _PlotLayout,
+    )
+
+    received: list[_PlotLayout] = []
+    configuration.plotLayoutChanged.connect(received.append)
+
+    new_layout = _PlotLayout(
+        slots=(
+            PlotSlotConfig(
+                slot_id="plot_1",
+                plot_type="time_response",
+                channel_selection=ChannelSelection(kind="channels"),
+            ),
+        )
+    )
+    configuration.set_plot_layout(new_layout)
+
+    assert len(received) == 1
+    assert received[0] is new_layout
+    assert configuration.plot_layout is new_layout
+
+
+@pytest.mark.unit
+def test_set_plot_layout_with_equal_value_does_not_emit(
+    configuration: ConfigurationModel,
+) -> None:
+    """ADR-020 transition-only: equal-value setter is a no-op."""
+    starting = configuration.plot_layout
+    duplicate = type(starting).from_dict(starting.to_dict())
+    received: list[object] = []
+    configuration.plotLayoutChanged.connect(received.append)
+
+    configuration.set_plot_layout(duplicate)
+
+    assert received == []
+    assert configuration.plot_layout == starting
