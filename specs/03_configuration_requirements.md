@@ -465,7 +465,8 @@ Recommended schema:
         "channel_selection": {
           "kind": "channels",
           "channels": [],
-          "io_pair": null
+          "input": null,
+          "output": null
         },
         "axis_config": {
           "x_label": null,
@@ -483,7 +484,8 @@ Recommended schema:
         "channel_selection": {
           "kind": "io_pair",
           "channels": [],
-          "io_pair": null
+          "input": null,
+          "output": null
         },
         "axis_config": {
           "x_label": null,
@@ -501,7 +503,8 @@ Recommended schema:
         "channel_selection": {
           "kind": "io_pair",
           "channels": [],
-          "io_pair": null
+          "input": null,
+          "output": null
         },
         "axis_config": {
           "x_label": null,
@@ -519,7 +522,8 @@ Recommended schema:
         "channel_selection": {
           "kind": "system_wide",
           "channels": [],
-          "io_pair": null
+          "input": null,
+          "output": null
         },
         "axis_config": {
           "x_label": null,
@@ -606,6 +610,14 @@ Rules:
 
 ### 8.6 Plot Type Compatibility (channel_selection.kind)
 
+The canonical `channel_selection` schema is defined in ADR-016
+(`decisions/ADR-016-channel-selection-kind-schema.md`). The fields
+are flat siblings on the `channel_selection` object — there is no
+nested `io_pair` sub-object. When `kind` is `io_pair`, the
+`input` / `output` fields carry the I/O entry IDs; for every other
+kind they are `null`. The `channels` field is meaningful only for
+`kind: "channels"`.
+
 Each plot type belongs to a `channel_selection.kind` group:
 
 | Plot Type             | Selection Kind | Description                          |
@@ -634,7 +646,8 @@ Schema for `kind: "channels"`:
 {
   "kind": "channels",
   "channels": ["ch_output_y_0"],
-  "io_pair": null
+  "input": null,
+  "output": null
 }
 ```
 
@@ -644,10 +657,8 @@ Schema for `kind: "io_pair"`:
 {
   "kind": "io_pair",
   "channels": [],
-  "io_pair": {
-    "input_id": "ioin_01HV7NB3R8M5Y6X9Q2P1C7D4E0",
-    "output_id": "ioout_01HV7NC9M2J4K8Q1W5E7R9T3Y6"
-  }
+  "input": "ioin_01HV7NB3R8M5Y6X9Q2P1C7D4E0",
+  "output": "ioout_01HV7NC9M2J4K8Q1W5E7R9T3Y6"
 }
 ```
 
@@ -657,7 +668,8 @@ Schema for `kind: "system_wide"`:
 {
   "kind": "system_wide",
   "channels": [],
-  "io_pair": null
+  "input": null,
+  "output": null
 }
 ```
 
@@ -667,7 +679,7 @@ When a slot's `plot_type` is changed, `channel_selection` follows these rules:
 
 * If the new plot type uses the **same `kind`** as the previous type, `channel_selection` is **preserved**.
   * Example: `time_response` → `state_variables` keeps the existing channel list.
-  * Example: `bode` → `nyquist` keeps the existing `io_pair`.
+  * Example: `bode` → `nyquist` keeps the existing `input` / `output` pair.
 * If the new plot type uses a **different `kind`**, `channel_selection` is **reset to defaults** for that kind.
   * Example: `time_response` → `bode` resets channels (`kind` changes from `channels` to `io_pair`).
   * Example: `bode` → `pole_zero` resets to empty `system_wide`.
@@ -875,7 +887,7 @@ When loading an older-version project file:
 
 * missing fields are populated from `default_config.json`
 * missing sections fall back to defaults entirely
-* legacy `signals: []` field (from earlier schema) is migrated to `channel_selection: { kind: "channels", channels: [...], io_pair: null }`
+* legacy `signals: []` field (from earlier schema) is migrated to `channel_selection: { kind: "channels", channels: [...], input: null, output: null }`
 * no data loss
 
 ### 12.4 Migration Failures
